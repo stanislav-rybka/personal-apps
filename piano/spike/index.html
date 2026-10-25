@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Piano Spike</title>
+<style>
+  :root { --bg:#14161a; --card:#1e2127; --fg:#e8e6e1; --muted:#9a9890; --ok:#4fbf7a; --bad:#e0604f; --warn:#e0b04f; --accent:#7aa7ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui, sans-serif; }
+  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:10px 16px; background:#0e1013; border-bottom:1px solid #2a2d33; }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  .pill { padding:4px 10px; border-radius:99px; font-size:14px; background:#2a2d33; white-space:nowrap; }
+  .pill.ok { background:var(--ok); color:#06210f; } .pill.bad { background:var(--bad); color:#2a0703; }
+  main { max-width:900px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  section { background:var(--card); border-radius:12px; padding:14px 16px; }
+  h2 { font-size:15px; margin:0 0 10px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  button { font:inherit; padding:10px 16px; border-radius:8px; border:0; background:#343843; color:var(--fg); cursor:pointer; min-height:44px; }
+  button.primary { background:var(--accent); color:#0b1630; font-weight:600; }
+  button:disabled { opacity:.4; }
+  input { font:inherit; width:100%; padding:10px; border-radius:8px; border:1px solid #3a3e47; background:#121418; color:var(--fg); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .checks { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+  .checks li::before { content:"○"; display:inline-block; width:1.4em; color:var(--muted); }
+  .checks li.ok::before { content:"●"; color:var(--ok); } .checks li.bad::before { content:"●"; color:var(--bad); }
+  #target { font-size:min(28vw, 180px); font-weight:700; text-align:center; line-height:1.1; margin:6px 0; min-height:1.1em; }
+  #target.hit { color:var(--ok); } #target.miss { color:var(--bad); }
+  #feedback { text-align:center; min-height:1.5em; color:var(--muted); font-size:18px; }
+  #lastNote { font-variant-numeric:tabular-nums; }
+  #log { font:12px/1.4 ui-monospace, monospace; white-space:pre-wrap; max-height:240px; overflow:auto; color:var(--muted); margin:0; }
+  .muted { color:var(--muted); font-size:14px; }
+  select { font:inherit; padding:10px; border-radius:8px; background:#121418; color:var(--fg); border:1px solid #3a3e47; min-height:44px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Piano Spike</h1>
+  <span id="midiPill" class="pill bad">MIDI: нет</span>
+  <span id="lastNote" class="pill">—</span>
+  <span id="queuePill" class="pill">очередь: 0</span>
+</header>
+<main>
+  <section>
+    <h2>Критерии spike</h2>
+    <ul class="checks">
+      <li id="c-midi">FP-30X виден по MIDI, ноты приходят</li>
+      <li id="c-get">GET к мосту читается через fetch (список и урок)</li>
+      <li id="c-post">POST записал результат</li>
+      <li id="c-confirm">Клиент прочитал подтверждение сохранения (attemptId совпал)</li>
+      <li id="c-dedup">Повтор того же attemptId не создал вторую строку</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Мост</h2>
+    <div class="row">
+      <input id="bridgeUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="saveUrl">Сохранить</button>
+      <button id="ping">Ping</button>
+      <button id="list" class="primary">Список уроков</button>
+      <select id="lessonSel" disabled><option>—</option></select>
+      <button id="load" disabled>Открыть</button>
+    </div>
+    <p id="lessonInfo" class="muted"></p>
+  </section>
+
+  <section>
+    <h2>MIDI</h2>
+    <div class="row">
+      <button id="midiBtn" class="primary">Подключить MIDI</button>
+      <span id="midiInputs" class="muted"></span>
+    </div>
+    <p class="muted">Bluetooth: пианино должно быть сопряжено с планшетом до нажатия. Если входов 0 — переподключи и нажми снова.</p>
+  </section>
+
+  <section>
+    <h2>Упражнение</h2>
+    <p id="theory" class="muted">Сначала открой урок.</p>
+    <div id="target">·</div>
+    <div id="feedback"></div>
+    <div class="row" style="justify-content:center">
+      <button id="start" class="primary" disabled>Старт</button>
+      <button id="simOk" disabled title="Без пианино: засчитать верно">Сим: верно</button>
+      <button id="simBad" disabled title="Без пианино: засчитать ошибку">Сим: ошибка</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Отправка</h2>
+    <div class="row">
+      <button id="flush">Отправить очередь</button>
+      <button id="dup" disabled>Повторить последний attemptId</button>
+      <button id="clearQ">Очистить очередь</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Лог</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', last: 'pa.piano.lastConfirmed' };
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { log('localStorage недоступен: ' + e.message); } }
+  };
+  const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const noteName = n => NAMES[n % 12] + (Math.floor(n / 12) - 1);
+
+  function log(msg) {
+    const t = new Date().toLocaleTimeString('ru-RU');
+    $('log').textContent = `[${t}] ${msg}\n` + $('log').textContent;
+  }
+  function check(id, ok) { $(id).className = ok ? 'ok' : 'bad'; }
+  const url = () => store.get(K.url, '');
+
+  // ---------- Bridge ----------
+  $('bridgeUrl').value = url();
+  $('saveUrl').onclick = () => {
+    const v = $('bridgeUrl').value.trim();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(v)) { log('URL не похож на /exec Apps Script'); return; }
+    store.set(K.url, v); log('URL сохранён');
+  };
+
+  async function get(params) {
+    if (!url()) throw new Error('нет URL моста');
+    const res = await fetch(url() + '?' + new URLSearchParams(params), { method: 'GET', redirect: 'follow' });
+    const text = await res.text();
+    let data; try { data = JSON.parse(text); } catch { throw new Error(`HTTP ${res.status}, не JSON: ${text.slice(0, 120)}`); }
+    if (!data.ok) throw new Error(data.error || 'ok=false');
+    return data;
+  }
+
+  $('ping').onclick = async () => {
+    try { const d = await get({ action: 'ping' }); log('ping ok ' + d.ts); }
+    catch (e) { log('ping FAIL: ' + e.message); check('c-get', false); }
+  };
+
+  $('list').onclick = async () => {
+    try {
+      const d = await get({ action: 'list' });
+      const sel = $('lessonSel');
+      sel.innerHTML = '';
+      d.lessons.forEach(l => { const o = document.createElement('option'); o.value = l.id; o.textContent = `${l.id} — ${l.title}`; sel.appendChild(o); });
+      sel.disabled = $('load').disabled = !d.lessons.length;
+      (d.errors || []).forEach(er => log(`урок ${er.file} не читается: ${er.error}`));
+      log(`список: ${d.lessons.length} урок(ов)`);
+    } catch (e) { log('list FAIL: ' + e.message); check('c-get', false); }
+  };
+
+  let lesson = null, block = null;
+  $('load').onclick = async () => {
+    try {
+      const d = await get({ action: 'lesson', id: $('lessonSel').value });
+      lesson = d.lesson;
+      block = (lesson.blocks || []).find(b => b.type === 'note-reading');
+      const th = (lesson.blocks || []).find(b => b.type === 'theory');
+      if (!block || !Array.isArray(block.pitches) || !block.pitches.length) throw new Error('в уроке нет note-reading с pitches');
+      $('lessonInfo').textContent = `${lesson.title} · ${lesson.goal || ''}`;
+      $('theory').textContent = th ? th.text : '';
+      $('start').disabled = false;
+      check('c-get', true);
+      log(`урок ${lesson.id} загружен, блок ${block.id}: ${block.pitches.join(' ')}`);
+    } catch (e) { log('lesson FAIL: ' + e.message); check('c-get', false); }
+  };
+
+  // ---------- MIDI ----------
+  let midiNotes = 0;
+  function updateInputs(access) {
+    const names = [...access.inputs.values()].filter(i => i.state === 'connected').map(i => i.name);
+    $('midiInputs').textContent = names.length ? 'входы: ' + names.join(', ') : 'входов 0';
+    $('midiPill').textContent = names.length ? 'MIDI: ' + names[0] : 'MIDI: нет';
+    $('midiPill').className = 'pill ' + (names.length ? 'ok' : 'bad');
+    for (const inp of access.inputs.values()) inp.onmidimessage = onMidi;
+  }
+  $('midiBtn').onclick = async () => {
+    if (!navigator.requestMIDIAccess) { log('Web MIDI не поддерживается этим браузером'); check('c-midi', false); return; }
+    try {
+      const access = await navigator.requestMIDIAccess({ sysex: false });
+      updateInputs(access);
+      access.onstatechange = e => { log(`MIDI ${e.port.type} ${e.port.name}: ${e.port.state}`); updateInputs(access); };
+      log('MIDI доступ получен');
+    } catch (e) { log(`MIDI FAIL: ${e.name} ${e.message}`); check('c-midi', false); }
+  };
+  function onMidi(ev) {
+    const [st, n, vel] = ev.data;
+    if ((st & 0xF0) !== 0x90 || vel === 0) return; // only note-on
+    const name = noteName(n);
+    $('lastNote').textContent = name;
+    if (++midiNotes === 1) { check('c-midi', true); log('первая нота по MIDI: ' + name); }
+    answer(name, 'midi');
+  }
+
+  // ---------- Exercise ----------
+  let run = null;
+  function nextRound() {
+    const p = block.pitches;
+    let t; do { t = p[Math.floor(Math.random() * p.length)]; } while (p.length > 1 && run && t === run.target);
+    run.target = t; run.shownAt = performance.now(); run.locked = false;
+    $('target').textContent = t; $('target').className = '';
+    $('feedback').textContent = `раунд ${run.i + 1} из ${run.rounds}`;
+  }
+  $('start').onclick = () => {
+    run = { i: 0, rounds: block.rounds || 8, correct: 0, times: [], simulated: false, target: null };
+    $('simOk').disabled = $('simBad').disabled = false;
+    nextRound();
+  };
+  $('simOk').onclick = () => run && answer(run.target, 'sim');
+  $('simBad').onclick = () => run && answer('X0', 'sim');
+
+  function answer(name, src) {
+    if (!run || run.locked || !run.target) return;
+    run.locked = true;
+    if (src === 'sim') run.simulated = true;
+    const ok = name === run.target;
+    run.times.push(performance.now() - run.shownAt);
+    if (ok) run.correct++;
+    $('target').className = ok ? 'hit' : 'miss';
+    $('feedback').textContent = ok ? 'верно' : `это ${name}, нужно ${run.target}`;
+    setTimeout(() => { if (++run.i < run.rounds) nextRound(); else finish(); }, ok ? 350 : 900);
+  }
+
+  function uuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+  }
+
+  function finish() {
+    const accuracy = run.correct / run.rounds;
+    const result = {
+      attemptId: uuid(),
+      lessonId: lesson.id,
+      blockId: block.id,
+      accuracy: Math.round(accuracy * 1000) / 1000,
+      avgResponseMs: Math.round(run.times.reduce((a, b) => a + b, 0) / run.times.length),
+      status: accuracy >= (block.minAccuracy ?? 0.8) ? 'passed' : 'needs-practice',
+      checkedBy: run.simulated ? 'self' : 'midi',
+      finishedAt: new Date().toISOString(),
+      client: navigator.userAgent.slice(0, 100)
+    };
+    $('target').textContent = `${run.correct}/${run.rounds}`; $('target').className = '';
+    $('feedback').textContent = `${result.status} · ${result.avgResponseMs} мс в среднем`;
+    $('simOk').disabled = $('simBad').disabled = true;
+    run = null;
+    enqueue(result);
+  }
+
+  // ---------- Queue ----------
+  const queue = () => store.get(K.queue, []);
+  function setQueue(q) { store.set(K.queue, q); $('queuePill').textContent = 'очередь: ' + q.length; }
+  function enqueue(r) {
+    const q = queue();
+    if (!q.some(x => x.attemptId === r.attemptId)) q.push(r);
+    setQueue(q); log(`результат ${r.attemptId.slice(0, 8)} в очереди`);
+    flush();
+  }
+
+  async function post(r) {
+    const res = await fetch(url(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // no CORS preflight
+      body: JSON.stringify(r),
+      redirect: 'follow'
+    });
+    const text = await res.text();
+    let d; try { d = JSON.parse(text); } catch { throw new Error(`HTTP ${res.status}, не JSON: ${text.slice(0, 120)}`); }
+    return d;
+  }
+
+  let flushing = false;
+  async function flush() {
+    if (flushing || !url()) return;
+    flushing = true;
+    try {
+      for (const r of queue()) {
+        try {
+          const d = await post(r);
+          if (d.ok && d.saved && d.attemptId === r.attemptId) {
+            setQueue(queue().filter(x => x.attemptId !== r.attemptId));
+            store.set(K.last, r);
+            $('dup').disabled = false;
+            check('c-post', true); check('c-confirm', true);
+            log(`сохранено ${r.attemptId.slice(0, 8)}${d.duplicate ? ' (дубль, строка не добавлена)' : ''}`);
+          } else {
+            log(`не подтверждено ${r.attemptId.slice(0, 8)}: ${d.error || JSON.stringify(d)}`);
+            check('c-confirm', false);
+            break;
+          }
+        } catch (e) { log(`POST FAIL (останется в очереди): ${e.message}`); check('c-post', false); break; }
+      }
+    } finally { flushing = false; }
+  }
+  $('flush').onclick = flush;
+  $('clearQ').onclick = () => { setQueue([]); log('очередь очищена'); };
+  $('dup').onclick = async () => {
+    const r = store.get(K.last, null);
+    if (!r) return;
+    try {
+      const d = await post(r);
+      const ok = d.ok && d.attemptId === r.attemptId && d.duplicate === true;
+      check('c-dedup', ok);
+      log(ok ? 'дубль распознан, вторая строка не создана' : 'дубль НЕ распознан: ' + JSON.stringify(d));
+    } catch (e) { log('dup FAIL: ' + e.message); }
+  };
+  if (store.get(K.last, null)) $('dup').disabled = false;
+
+  window.addEventListener('online', flush);
+  setInterval(flush, 30000);
+  setQueue(queue());
+  if (queue().length) flush();
+  log('страница загружена' + (window.isSecureContext ? '' : ' — НЕ secure context, MIDI не заработает'));
+})();
+</script>
+</body>
+</html>
