@@ -76,7 +76,7 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
     if (!group.length) return new VF.GhostNote({ duration: 'q' });
     const g = group.slice().sort((a, b) => a.midi - b.midi);
     // filled heads without stems: the usual look of reading drills; rhythm isn't shown, so no stems or hollow heads
-    const note = new VF.StaveNote({ clef: staffClef, keys: g.map(n => `${n.letter.toLowerCase()}${n.acc}/${n.oct}`), duration: 'q', auto_stem: true });
+    const note = new VF.StaveNote({ clef: staffClef, keys: g.map(n => `${n.letter.toLowerCase()}${n.acc}/${n.oct}`), duration: 'q', auto_stem: true, glyph_font_scale: 31 });
     note.setStyle(style); note.setLedgerLineStyle(ledgerStyle);
     note.setStemStyle({ strokeStyle: 'transparent', fillStyle: 'transparent' });
     g.forEach((n, i) => {
@@ -305,21 +305,53 @@ const STATE_TEXT = { done: 'пройден', going: 'в процессе', new: 
 let active = null; // the block currently listening to MIDI
 function activate(ctrl) { if (active && active !== ctrl) active.stop?.(); active = ctrl; midi.listener = ctrl ? e => ctrl.onMidi(e) : null; }
 
-const BLOCKS = {
-  theory(b) {
-    const el = h('div', { class: 'theory' });
-    const paras = String(b.text || '').split(/\n\s*\n/);
-    for (const p of paras) {
-      const lines = p.split('\n');
-      if (lines.every(l => /^\s*-\s+/.test(l))) el.append(h('ul', {}, lines.map(l => h('li', {}, l.replace(/^\s*-\s+/, '')))));
-      else {
-        const intro = []; const items = [];
-        for (const l of lines) (/^\s*-\s+/.test(l) ? items : intro).push(l.replace(/^\s*-\s+/, ''));
-        if (intro.length) el.append(h('p', {}, intro.join(' ')));
-        if (items.length) el.append(h('ul', {}, items.map(i => h('li', {}, i))));
-      }
+/* ---------------- text markup (see piano-content-spec) ---------------- */
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+function renderMarkup(text) {
+  const root = h('div', { class: 'theory' });
+  const lines = String(text || '').replace(/\r/g, '').split('\n');
+  let i = 0;
+  const take = test => { const out = []; while (i < lines.length && test(lines[i])) out.push(lines[i++]); return out; };
+  while (i < lines.length) {
+    const line = lines[i], t = line.trim();
+    if (!t) { i++; continue; }
+    if (/^\+\+\+\s+\S/.test(t)) {
+      i++; const inner = take(l => l.trim() !== '+++'); i++;
+      const d = h('details', { class: 'toggle' }, h('summary', { html: inline(t.replace(/^\+\+\+\s+/, '')) }));
+      d.append(renderMarkup(inner.join('\n'))); root.append(d); continue;
     }
-    return el;
+    if (/^##\s+/.test(t)) { root.append(h('h4', { class: 'md-h', html: inline(t.replace(/^##\s+/, '')) })); i++; continue; }
+    if (/^>\s?/.test(t)) { const q = take(l => /^>\s?/.test(l.trim())).map(l => l.trim().replace(/^>\s?/, '')); root.append(h('div', { class: 'callout', html: inline(q.join(' ')) })); continue; }
+    if (t.startsWith('|')) {
+      const rows = take(l => l.trim().startsWith('|')).map(l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())).filter(r => !r.every(c => /^:?-{2,}:?$/.test(c)));
+      const [head, ...body] = rows;
+      root.append(h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, head.map(c => h('th', { html: inline(c) })))), h('tbody', {}, body.map(r => h('tr', {}, r.map(c => h('td', { html: inline(c) }))))))));
+      continue;
+    }
+    if (/^-\s+/.test(t)) { root.append(h('ul', {}, take(l => /^-\s+/.test(l.trim())).map(l => h('li', { html: inline(l.trim().replace(/^-\s+/, '')) })))); continue; }
+    if (/^\d+\.\s+/.test(t)) { root.append(h('ol', {}, take(l => /^\d+\.\s+/.test(l.trim())).map(l => h('li', { html: inline(l.trim().replace(/^\d+\.\s+/, '')) })))); continue; }
+    const para = take(l => l.trim() && !/^(\+\+\+|##\s|>|\||-\s|\d+\.\s)/.test(l.trim()));
+    root.append(h('p', { html: inline(para.map(l => l.trim()).join(' ')) }));
+  }
+  return root;
+}
+const imageCache = {};
+function loadImage(name) {
+  return (imageCache[name] ||= bridge.get({ action: 'image', name }).then(d => `data:${d.mime};base64,${d.data}`));
+}
+
+const BLOCKS = {
+  theory(b) { return renderMarkup(b.text); },
+  image(b) {
+    const fig = h('figure', { class: 'figure image-fig' }, h('p', { class: 'feedback' }, 'Загружаю картинку…'));
+    loadImage(b.file).then(src => {
+      fig.innerHTML = '';
+      fig.append(h('img', { src, alt: b.caption || '' }));
+      if (b.caption) fig.append(h('figcaption', { class: 'caption' }, b.caption));
+      if (b.source) fig.append(h('div', { class: 'source' }, 'Источник: ' + b.source));
+    }).catch(e => { fig.innerHTML = ''; fig.append(h('p', { class: 'note-bad' }, `Картинка ${b.file} не загрузилась: ${e.message}`)); });
+    return fig;
   },
   staff(b) {
     const host = h('div', { class: 'staff-host' });
@@ -460,7 +492,7 @@ const BLOCKS = {
 
   'guided-practice'(b, lesson) {
     const stage = h('div', { class: 'stage' });
-    const text = BLOCKS.theory({ text: b.text }); text.classList.add('practice-text');
+    const text = renderMarkup(b.text); text.classList.add('practice-text');
     stage.append(h('div', { class: 'top' }, h('span', { class: 'kind' }, 'Играешь сам'), h('span')), text);
     if (b.metronome) {
       const bpm = b.metronome.bpm || 60;
