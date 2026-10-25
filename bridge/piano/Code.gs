@@ -4,7 +4,8 @@
  * The /exec URL is NOT stored in the repo; paste it on the tablet once.
  *
  * GET  ?action=ping            -> {ok, ts}
- * GET  ?action=list            -> {ok, lessons:[{id,title,schemaVersion}], errors:[{file,error}]}
+ * GET  ?action=list            -> {ok, lessons:[{id,title,goal,schemaVersion,checked}], errors:[{file,error}]}
+ * GET  ?action=progress        -> {ok, latest:{lessonId:{blockId:{status,savedAt}}}}
  * GET  ?action=lesson&id=<id>  -> {ok, lesson}
  * POST body (text/plain, JSON) -> {ok, saved:true, attemptId, duplicate}
  *
@@ -22,6 +23,7 @@ const HEADERS = ['savedAt', 'attemptId', 'lessonId', 'blockId', 'accuracy', 'avg
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const STATUSES = ['passed', 'needs-practice', 'in-progress', 'not-assessed'];
 const CHECKED_BY = ['midi', 'self'];
+const CHECKED_TYPES = ['note-reading', 'chord', 'guided-practice'];
 
 function doGet(e) {
   try {
@@ -30,6 +32,7 @@ function doGet(e) {
       case 'ping':   return json_({ ok: true, ts: new Date().toISOString() });
       case 'list':   return json_(listLessons_());
       case 'lesson': return json_({ ok: true, lesson: getLesson_(p.id) });
+      case 'progress': return json_({ ok: true, latest: progress_() });
       default:       return json_({ ok: false, error: 'unknown action' });
     }
   } catch (err) {
@@ -84,13 +87,29 @@ function listLessons_() {
     try {
       const l = JSON.parse(f.getBlob().getDataAsString('UTF-8'));
       if (!l.id || !l.title) throw new Error('no id or title');
-      lessons.push({ id: l.id, title: l.title, schemaVersion: l.schemaVersion });
+      const checked = (l.blocks || []).filter(b => CHECKED_TYPES.indexOf(b.type) >= 0).length;
+      lessons.push({ id: l.id, title: l.title, goal: l.goal || '', schemaVersion: l.schemaVersion, checked: checked });
     } catch (err) {
       errors.push({ file: name, error: String(err.message || err) });
     }
   }
   lessons.sort((a, b) => a.id < b.id ? -1 : 1);
   return { ok: true, lessons: lessons, errors: errors };
+}
+
+// Latest status per lesson block; rows are appended in time order, so the last one wins.
+function progress_() {
+  const sh = resultsSheet_();
+  const last = sh.getLastRow();
+  const out = {};
+  if (last < 2) return out;
+  const rows = sh.getRange(2, 1, last - 1, HEADERS.length).getValues();
+  rows.forEach(function (r) {
+    const lessonId = r[2], blockId = r[3];
+    if (!lessonId || !blockId) return;
+    (out[lessonId] = out[lessonId] || {})[blockId] = { status: r[6], savedAt: r[0] };
+  });
+  return out;
 }
 
 function getLesson_(id) {

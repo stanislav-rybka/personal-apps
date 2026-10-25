@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#161b29">
+<title>Клавиши</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css?v=1">
+</head>
+<body>
+<header class="topbar">
+  <button class="menu-btn" id="menuBtn" aria-label="Меню">
+    <svg viewBox="0 0 26 18" fill="none" stroke="#ede7d9" stroke-width="1.6" stroke-linecap="round"><path d="M1 2h24M1 9h24M1 16h24"/><circle cx="8" cy="9" r="2.6" fill="#f2a541" stroke="none"/></svg>
+  </button>
+  <div class="brand">Клавиши <small id="crumb"></small></div>
+  <button class="pill" id="metroPill" aria-label="Метроном"><span class="dot"></span><span id="metroLabel">60</span></button>
+  <button class="pill" id="midiPill" aria-label="MIDI"><span class="dot"></span><span id="midiLabel">MIDI</span><span class="last-note" id="lastNote"></span></button>
+</header>
+
+<div class="scrim" id="scrim"></div>
+<nav class="drawer" id="drawer" aria-label="Разделы">
+  <h2>Клавиши</h2>
+  <a class="nav-link" href="#/theory" data-nav="theory"><span data-art="nav-theory"></span>Теория</a>
+  <a class="nav-link" href="#/exercises" data-nav="exercises"><span data-art="nav-exercises"></span>Упражнения</a>
+  <a class="nav-link" href="#/songs" data-nav="songs"><span data-art="nav-songs"></span>Песни</a>
+  <div class="spacer"></div>
+  <a class="nav-link" href="#/settings" data-nav="settings"><span data-art="nav-settings"></span>Настройки</a>
+</nav>
+
+<div class="metro-pop" id="metroPop" role="dialog" aria-label="Метроном">
+  <div class="bpm"><span id="bpmVal">60</span> <span style="font-size:18px;color:var(--muted)">BPM</span></div>
+  <input type="range" id="bpmRange" min="30" max="200" value="60" aria-label="Темп">
+  <div class="beats" id="beatDots"></div>
+  <div class="row center">
+    <button class="btn" id="bpmMinus">−5</button>
+    <button class="btn primary" id="metroToggle">Старт</button>
+    <button class="btn" id="bpmPlus">+5</button>
+  </div>
+  <div class="row center" style="margin-top:10px">
+    <button class="btn quiet" data-beats="3">3/4</button>
+    <button class="btn quiet" data-beats="4">4/4</button>
+  </div>
+</div>
+
+<main id="main"></main>
+<div class="toast" id="toast"></div>
+
+<script src="vendor/vexflow-4.2.2-bravura.js"></script>
+<script src="js/app.js?v=1"></script>
+</body>
+</html>
