@@ -577,7 +577,7 @@ function exercisesPage() {
 const b64ToBytes = b64 => { const bin = atob(b64); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
 const songTitle = n => n.replace(/\.(mid|midi|musicxml|xml)$/i, '');
 const songId = n => 'song-' + (songTitle(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'x');
-const HAND_COLOR = { R: COLORS.right, L: COLORS.left };
+const HAND_COLOR = { R: COLORS.right, L: COLORS.left, V: '#b9a6f2' };
 
 async function songsPage() {
   const p = page(hero('Песни', 'Мелодия и аккомпанемент по нотам: приложение ждёт, пока сыграешь нужные клавиши, и ведёт дальше.'));
@@ -599,7 +599,17 @@ async function songsPage() {
   body.append(h('p', { class: 'feedback', style: 'text-align:left;margin-top:22px' }, 'Добавить песню: MIDI-файл в Google Drive → Music/Piano/songs. Разбор по аккордам переедет сюда следующим шагом.'));
 }
 
-function prepareSong(m) {
+function finishSong(base) {
+  const { notes } = base;
+  notes.sort((a, b) => a.ticks - b.ticks || a.midi - b.midi);
+  const starts = base.barStarts, nums = base.barNums;
+  let i = 0;
+  for (const n of notes) { while (i + 1 < starts.length && starts[i + 1] <= n.ticks) i++; n.bar = nums[i]; }
+  const lo = Math.min(...notes.map(n => n.midi)), hi = Math.max(...notes.map(n => n.midi));
+  const hands = [...new Set(notes.map(n => n.hand))];
+  return { ...base, lo, hi, hands, firstBar: nums[0], bars: notes.length ? notes[notes.length - 1].bar : nums[0] };
+}
+function prepareMidi(m) {
   const tracks = m.tracks.filter(t => t.notes.length);
   const avg = t => t.notes.reduce((a, n) => a + n.midi, 0) / t.notes.length;
   const notes = [];
@@ -608,12 +618,79 @@ function prepareSong(m) {
     const rAvg = avg(sorted[0]), lAvg = avg(sorted[sorted.length - 1]);
     for (const t of sorted) { const hand = Math.abs(avg(t) - rAvg) <= Math.abs(avg(t) - lAvg) ? 'R' : 'L'; for (const n of t.notes) notes.push({ midi: n.midi, ticks: n.ticks, dur: n.durationTicks, time: n.time, hand }); }
   } else for (const n of (tracks[0]?.notes || [])) notes.push({ midi: n.midi, ticks: n.ticks, dur: n.durationTicks, time: n.time, hand: n.midi >= 60 ? 'R' : 'L' });
-  notes.sort((a, b) => a.ticks - b.ticks || a.midi - b.midi);
   const ppq = m.header.ppq, ts = m.header.timeSignatures[0]?.timeSignature || [4, 4];
-  const bar = ppq * 4 * ts[0] / ts[1];
-  for (const n of notes) n.bar = Math.floor(n.ticks / bar) + 1;
-  const lo = Math.min(...notes.map(n => n.midi)), hi = Math.max(...notes.map(n => n.midi));
-  return { m, notes, ppq, ts, barTicks: bar, bars: notes.length ? notes[notes.length - 1].bar : 0, lo, hi, bpm: Math.round(m.header.tempos[0]?.bpm || 100) };
+  const bar = ppq * 4 * ts[0] / ts[1], last = notes.reduce((a, n) => Math.max(a, n.ticks), 0);
+  const barStarts = [], barNums = [];
+  for (let k = 0; k * bar <= last + bar; k++) { barStarts.push(k * bar); barNums.push(k + 1); }
+  return finishSong({ notes, ppq, ts, barStarts, barNums, bpm: Math.round(m.header.tempos[0]?.bpm || 100),
+    t2s: t => m.header.ticksToSeconds(t), s2t: x => m.header.secondsToTicks(x) });
+}
+
+// MusicXML (partwise, uncompressed). Piano staff 1 = right hand, staff 2 = left; other single-staff parts = melody ('V').
+function prepareMusicXML(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('файл MusicXML не читается');
+  const root = doc.querySelector('score-partwise');
+  if (!root) throw new Error('поддерживается только обычный MusicXML (partwise), не .mxl');
+  const PPQ = 480, STEP = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const notes = [], tempos = [];
+  let ts = null, barStarts = null, barNums = null;
+  const kid = (el, name) => { for (const c of el.children) if (c.tagName === name) return c; return null; };
+  const kids = (el, name) => [...el.children].filter(c => c.tagName === name);
+  const txt = (el, name) => kid(el, name)?.textContent?.trim();
+  for (const part of kids(root, 'part')) {
+    let divisions = 1, cursor = 0, lastStart = 0, staves = 1;
+    const myStarts = [], myNums = [], open = {}, partNotes = [];
+    let seq = 0;
+    for (const meas of kids(part, 'measure')) {
+      const implicit = meas.getAttribute('implicit') === 'yes';
+      myStarts.push(cursor); myNums.push(implicit && seq === 0 ? 0 : (seq === 0 ? 1 : myNums[myNums.length - 1] + 1));
+      seq++;
+      for (const el of meas.children) {
+        const tag = el.tagName;
+        if (tag === 'attributes') {
+          if (kid(el, 'divisions')) divisions = +txt(el, 'divisions');
+          if (kid(el, 'staves')) staves = +txt(el, 'staves');
+          const t = kid(el, 'time'); if (t && !ts) ts = [+txt(t, 'beats'), +txt(t, 'beat-type')];
+        } else if (tag === 'sound' || tag === 'direction') {
+          const snd = tag === 'sound' ? el : kid(el, 'sound');
+          if (snd && snd.getAttribute('tempo')) tempos.push({ ticks: cursor, bpm: +snd.getAttribute('tempo') });
+        } else if (tag === 'backup') cursor -= +txt(el, 'duration') * PPQ / divisions;
+        else if (tag === 'forward') cursor += +txt(el, 'duration') * PPQ / divisions;
+        else if (tag === 'note') {
+          if (kid(el, 'grace') || kid(el, 'cue')) continue;
+          const dur = +(txt(el, 'duration') || 0) * PPQ / divisions;
+          const isChord = !!kid(el, 'chord');
+          const start = isChord ? lastStart : cursor;
+          if (!isChord) { lastStart = cursor; cursor += dur; }
+          const pitch = kid(el, 'pitch'); if (!pitch) continue;
+          const midiN = (+txt(pitch, 'octave') + 1) * 12 + STEP[txt(pitch, 'step')] + Math.round(+(txt(pitch, 'alter') || 0));
+          const staff = +(txt(el, 'staff') || 1), voice = txt(el, 'voice') || '1';
+          const ties = kids(el, 'tie').map(t => t.getAttribute('type'));
+          const key = `${midiN}|${staff}|${voice}`;
+          if (ties.includes('stop') && open[key]) {
+            const o = open[key]; o.dur = start + dur - o.ticks;
+            if (!ties.includes('start')) delete open[key];
+            continue;
+          }
+          const hand = staves >= 2 ? (staff === 1 ? 'R' : 'L') : 'V';
+          const n = { midi: midiN, ticks: start, dur, hand };
+          partNotes.push(n);
+          if (ties.includes('start')) open[key] = n;
+        }
+      }
+    }
+    // a lone single-staff part (no piano) is played as right/left by register
+    notes.push(...partNotes);
+    if (!barStarts) { barStarts = myStarts; barNums = myNums; }
+  }
+  if (!notes.some(n => n.hand !== 'V')) for (const n of notes) n.hand = n.midi >= 60 ? 'R' : 'L';
+  tempos.sort((a, b) => a.ticks - b.ticks);
+  if (!tempos.length || tempos[0].ticks > 0) tempos.unshift({ ticks: 0, bpm: tempos[0]?.bpm || 100 });
+  const t2s = t => { let s = 0; for (let i = 0; i < tempos.length; i++) { const a = tempos[i], b = tempos[i + 1]; const end = b ? Math.min(t, b.ticks) : t; if (end > a.ticks) s += (end - a.ticks) / PPQ * 60 / a.bpm; if (!b || t <= b.ticks) break; } return s; };
+  const s2t = x => { let s = 0; for (let i = 0; i < tempos.length; i++) { const a = tempos[i], b = tempos[i + 1]; const seg = b ? (b.ticks - a.ticks) / PPQ * 60 / a.bpm : Infinity; if (x <= s + seg) return a.ticks + (x - s) * a.bpm / 60 * PPQ; s += seg; } return 0; };
+  for (const n of notes) n.time = t2s(n.ticks);
+  return finishSong({ notes, ppq: PPQ, ts: ts || [4, 4], barStarts, barNums, bpm: Math.round(tempos[0].bpm), t2s, s2t });
 }
 function buildEvents(song, hands, from, to) {
   const tol = song.ppq / 16, ev = [];
@@ -627,14 +704,17 @@ function buildEvents(song, hands, from, to) {
 
 // one tiny synth for "listen"
 const synth = {
-  ctx: null,
+  ctx: null, bus: null,
+  // every playback gets its own bus; Stop disconnects it, which silences notes already scheduled ahead
+  newBus() { this.ctx = this.ctx || metro.ctx || new (window.AudioContext || window.webkitAudioContext)(); metro.ctx = this.ctx; this.bus = this.ctx.createGain(); this.bus.connect(this.ctx.destination); },
+  silence() { if (this.bus) { try { this.bus.disconnect(); } catch { /* already gone */ } this.bus = null; } },
   play(midiNote, when, dur, vel = 0.25) {
-    this.ctx = this.ctx || metro.ctx || new (window.AudioContext || window.webkitAudioContext)(); metro.ctx = this.ctx;
+    if (!this.bus) this.newBus();
     const f = 440 * Math.pow(2, (midiNote - 69) / 12), o = this.ctx.createOscillator(), o2 = this.ctx.createOscillator(), g = this.ctx.createGain();
     o.type = 'triangle'; o.frequency.value = f; o2.type = 'sine'; o2.frequency.value = f * 2;
     const g2 = this.ctx.createGain(); g2.gain.value = 0.25;
     g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(vel, when + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, when + Math.min(Math.max(dur, 0.25), 2.5));
-    o.connect(g); o2.connect(g2).connect(g); g.connect(this.ctx.destination);
+    o.connect(g); o2.connect(g2).connect(g); g.connect(this.bus);
     o.start(when); o2.start(when); o.stop(when + 2.6); o2.stop(when + 2.6);
   }
 };
@@ -643,23 +723,23 @@ async function songPage(name) {
   const p = page(h('p', { class: 'feedback' }, 'Открываю песню…'));
   let song;
   try {
-    if (!/\.midi?$/i.test(name)) throw new Error('MusicXML пока не поддерживается — нужен .mid');
     const d = await bridge.get({ action: 'song', name });
-    song = prepareSong(new Midi(b64ToBytes(d.data)));
+    const bytes = b64ToBytes(d.data);
+    song = /\.midi?$/i.test(name) ? prepareMidi(new Midi(bytes)) : prepareMusicXML(new TextDecoder('utf-8').decode(bytes));
     if (!song.notes.length) throw new Error('в файле нет нот');
   } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   p.innerHTML = '';
   p.classList.add('wide');
-  const st = { hands: ['R', 'L'], mode: 'wait', from: 1, to: song.bars, loop: true, tempo: 70, running: false, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null };
+  const st = { hands: ['R', 'L'], mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70, running: false, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null };
 
   const seg = (opts, get, set) => h('div', { class: 'seg' }, opts.map(([v, label]) => { const b = h('button', { class: 'seg-b', onclick: () => { set(v); refreshSeg(); reset(); } }, label); b.dataset.v = JSON.stringify(v); b._get = get; return b; }));
   const segs = [];
   const refreshSeg = () => segs.forEach(s => s.querySelectorAll('.seg-b').forEach(b => b.classList.toggle('on', JSON.stringify(b._get()) === b.dataset.v)));
-  const handsSeg = seg([[['R'], 'Правая'], [['L'], 'Левая'], [['R', 'L'], 'Обе']], () => st.hands, v => (st.hands = v));
+  const handsSeg = seg([[['R'], 'Правая'], [['L'], 'Левая'], [['R', 'L'], 'Обе'], ...(song.hands.includes('V') ? [[['V'], 'Мелодия'], [['V', 'L'], 'Мелодия + левая']] : [])], () => st.hands, v => (st.hands = v));
   const modeSeg = seg([['wait', 'Ждать меня'], ['listen', 'Послушать']], () => st.mode, v => (st.mode = v));
   segs.push(handsSeg, modeSeg);
-  const num = (val, on) => h('input', { type: 'number', min: 1, max: song.bars, value: val, class: 'num', onchange: e => { on(Math.max(1, Math.min(song.bars, +e.target.value || 1))); reset(); } });
-  const fromIn = num(1, v => (st.from = v)), toIn = num(song.bars, v => (st.to = v));
+  const num = (val, on) => h('input', { type: 'number', min: song.firstBar, max: song.bars, value: val, class: 'num', onchange: e => { on(Math.max(song.firstBar, Math.min(song.bars, +e.target.value || song.firstBar))); reset(); } });
+  const fromIn = num(song.firstBar, v => (st.from = v)), toIn = num(song.bars, v => (st.to = v));
   const loopCb = h('input', { type: 'checkbox', checked: true, onchange: e => (st.loop = e.target.checked) });
   const tempoVal = h('span', {}, '70%');
   const tempoIn = h('input', { type: 'range', min: 30, max: 100, step: 5, value: 70, oninput: e => { st.tempo = +e.target.value; tempoVal.textContent = st.tempo + '%'; } });
@@ -712,11 +792,10 @@ async function songPage(name) {
     ctx.clearRect(0, 0, w, geo.h);
     ctx.fillStyle = '#121726'; ctx.fillRect(0, 0, w, area);
     // bar lines
-    const firstBar = Math.floor(st.view / song.barTicks);
     ctx.font = '12px Golos Text, sans-serif'; ctx.textBaseline = 'bottom';
-    for (let b = firstBar; b < firstBar + 10; b++) {
-      const y = area - (b * song.barTicks - st.view) * pxPerTick; if (y < 0) break;
-      ctx.fillStyle = '#2a3349'; ctx.fillRect(0, y, w, 1); ctx.fillStyle = '#6f7690'; ctx.fillText(String(b + 1), 6, y - 3);
+    for (let b = 0; b < song.barStarts.length; b++) {
+      const y = area - (song.barStarts[b] - st.view) * pxPerTick; if (y > area + 2) continue; if (y < 0) break;
+      ctx.fillStyle = '#2a3349'; ctx.fillRect(0, y, w, 1); ctx.fillStyle = '#6f7690'; ctx.fillText(String(song.barNums[b]), 6, y - 3);
     }
     // notes
     const curNotes = new Set((cur()?.notes || []));
@@ -752,7 +831,7 @@ async function songPage(name) {
       st.view += (target - st.view) * 0.18;
     } else if (st.play) {
       const t = (synth.ctx.currentTime - st.play.t0) * st.tempo / 100 + st.play.sec0;
-      st.view = song.m.header.secondsToTicks(t);
+      st.view = song.s2t(t);
       while (cur() && cur().ticks <= st.view) st.idx++;
       updateStatus();
       if (!cur() && st.view > (st.events[st.events.length - 1]?.ticks || 0) + song.ppq * 2) { if (st.loop && st.running) { startListen(); } else stop(); }
@@ -794,13 +873,13 @@ async function songPage(name) {
     else stop();
   }
   function startListen() {
-    synth.ctx = synth.ctx || metro.ctx || new (window.AudioContext || window.webkitAudioContext)(); metro.ctx = synth.ctx; synth.ctx.resume();
+    synth.silence(); synth.newBus(); synth.ctx.resume();
     st.idx = 0;
     const first = st.events[0]; if (!first) return;
     const sec0 = first.time, t0 = synth.ctx.currentTime + 0.4, rate = st.tempo / 100;
     st.play = { t0, sec0 };
     for (const ev of st.events) for (const n of ev.notes) {
-      const durSec = song.m.header.ticksToSeconds(n.ticks + n.dur) - n.time;
+      const durSec = song.t2s(n.ticks + n.dur) - n.time;
       synth.play(n.midi, t0 + (n.time - sec0) / rate, durSec / rate);
     }
   }
@@ -813,12 +892,12 @@ async function songPage(name) {
   }
   function stop() {
     st.running = false; startBtn.textContent = 'Старт';
-    if (st.play && synth.ctx) { synth.ctx.suspend().then(() => synth.ctx.resume()); st.play = null; }
+    synth.silence(); st.play = null;
     if (active === ctrl) { active = null; midi.listener = null; }
   }
 
   layout(); reset();
-  if (window.__klavishi) window.__klavishi.player = st;
+  if (window.__klavishi) { window.__klavishi.player = st; window.__klavishi.song = song; }
   const onResize = () => { layout(); draw(); };
   window.addEventListener('resize', onResize);
   st.raf = requestAnimationFrame(tick);
