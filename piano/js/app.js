@@ -1006,6 +1006,11 @@ async function songPage(name) {
     }
     // notes
     const curT = cur() ? cur().ticks : Infinity;
+    // "now" for sustain: the note being waited for (wait) or the playhead (listen)
+    const posT = st.mode === 'wait' && cur() ? cur().ticks : st.view;
+    const sounding = n => n.ticks < posT && n.ticks + n.dur > posT + 1;
+    const hold = {};
+    for (const ev of st.events) { if (ev.ticks >= posT) break; for (const n of ev.notes) if (sounding(n)) hold[n.midi] = HAND_COLOR[n.hand]; }
     for (const ev of st.events) {
       if ((ev.ticks - st.view) * pxPerTick > area + 60) break;
       const isCur = ev.ticks === curT, done = st.mode === 'wait' && ev.ticks < curT;
@@ -1014,8 +1019,9 @@ async function songPage(name) {
         const y0 = area - (n.ticks - st.view) * pxPerTick, hh = Math.max(9, n.dur * pxPerTick - 3);
         if (y0 < -4 || y0 - hh > area) continue;
         const col = HAND_COLOR[n.hand];
-        ctx.globalAlpha = done ? 0.14 : isCur ? 1 : 0.82;
-        if (isCur) { ctx.shadowColor = col; ctx.shadowBlur = 18; }
+        const sus = sounding(n);
+        ctx.globalAlpha = sus ? 0.92 : done ? 0.14 : isCur ? 1 : 0.82;
+        if (isCur || sus) { ctx.shadowColor = col; ctx.shadowBlur = sus ? 10 : 18; }
         ctx.fillStyle = col; rr(ctx, g.x + 2, y0 - hh, g.w - 4, hh, 6); ctx.fill();
         ctx.shadowBlur = 0;
         ctx.fillStyle = 'rgba(255,255,255,0.22)'; rr(ctx, g.x + 3, y0 - hh + 1, g.w - 6, Math.min(4, hh / 3), 3); ctx.fill();
@@ -1038,14 +1044,17 @@ async function songPage(name) {
     // keyboard
     const need = {}; for (const n of (cur()?.notes || [])) need[n.midi] = HAND_COLOR[n.hand];
     const held = midi.held;
-    const fill = (n, black) => st.wrongFlash[n] > now ? COLORS.wrong : held.has(n) && need[n] ? '#ffffff' : need[n] || (held.has(n) ? (black ? '#59617e' : '#c7ccda') : black ? '#1b2030' : COLORS.paper);
+    const fill = (n, black) => st.wrongFlash[n] > now ? COLORS.wrong : held.has(n) && need[n] ? '#ffffff' : need[n] || (hold[n] && held.has(n) ? hold[n] : null) || (held.has(n) ? (black ? '#59617e' : '#c7ccda') : black ? '#1b2030' : COLORS.paper);
+    // a key that should still be held but was released: pale hand colour as a "keep holding" hint
+    const hint = n => hold[n] && !held.has(n) && !need[n];
     for (const n of whites) {
       const g = geo.x[n], down = held.has(n) ? 2 : 0;
       ctx.fillStyle = fill(n, false); rr(ctx, g.x + 1, area + 2 + down, g.w - 2, kh - 4, 5); ctx.fill();
+      if (hint(n)) { ctx.globalAlpha = 0.45; ctx.fillStyle = hold[n]; rr(ctx, g.x + 1, area + 2, g.w - 2, kh - 4, 5); ctx.fill(); ctx.globalAlpha = 1; }
       ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(g.x + 1, area + kh - 8 + down, g.w - 2, 4);
       if (n === 60) { ctx.fillStyle = '#8a90a5'; ctx.beginPath(); ctx.arc(g.x + g.w / 2, area + kh - 16, 3, 0, 7); ctx.fill(); }
     }
-    for (let n = lo; n <= hi; n++) { if (!isBlack(n)) continue; const g = geo.x[n], down = held.has(n) ? 2 : 0; ctx.fillStyle = fill(n, true); rr(ctx, g.x, area + 2 + down, g.w, kh * 0.6, 4); ctx.fill(); }
+    for (let n = lo; n <= hi; n++) { if (!isBlack(n)) continue; const g = geo.x[n], down = held.has(n) ? 2 : 0; ctx.fillStyle = fill(n, true); rr(ctx, g.x, area + 2 + down, g.w, kh * 0.6, 4); ctx.fill(); if (hint(n)) { ctx.globalAlpha = 0.5; ctx.fillStyle = hold[n]; rr(ctx, g.x, area + 2, g.w, kh * 0.6, 4); ctx.fill(); ctx.globalAlpha = 1; } }
   }
 
   /* ---- loop over frames ---- */
