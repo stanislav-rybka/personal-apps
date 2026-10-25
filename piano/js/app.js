@@ -32,6 +32,7 @@ function toast(msg) {
 /* ---------------- notes ---------------- */
 const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 function parseNote(s) {
   const m = /^([A-G])(#|b)?(-?\d)?$/.exec(String(s).trim());
   if (!m) throw new Error(`нота «${s}» не читается`);
@@ -622,6 +623,9 @@ function prepareMidi(m) {
   const bar = ppq * 4 * ts[0] / ts[1], last = notes.reduce((a, n) => Math.max(a, n.ticks), 0);
   const barStarts = [], barNums = [];
   for (let k = 0; k * bar <= last + bar; k++) { barStarts.push(k * bar); barNums.push(k + 1); }
+  const ks = m.header.keySignatures[0];
+  const flats = !!ks && (/b/.test(ks.key) || (ks.scale === 'major' && ks.key === 'F') || (ks.scale === 'minor' && ['D', 'G', 'C', 'F'].includes(ks.key)));
+  for (const n of notes) n.label = (flats ? FLAT_NAMES : SHARP_NAMES)[n.midi % 12];
   return finishSong({ notes, ppq, ts, barStarts, barNums, bpm: Math.round(m.header.tempos[0]?.bpm || 100),
     t2s: t => m.header.ticksToSeconds(t), s2t: x => m.header.secondsToTicks(x) });
 }
@@ -674,7 +678,8 @@ function prepareMusicXML(text) {
             continue;
           }
           const hand = staves >= 2 ? (staff === 1 ? 'R' : 'L') : 'V';
-          const n = { midi: midiN, ticks: start, dur, hand };
+          const alt = Math.round(+(txt(pitch, 'alter') || 0));
+          const n = { midi: midiN, ticks: start, dur, hand, label: txt(pitch, 'step') + (alt > 0 ? '#'.repeat(alt) : alt < 0 ? 'b'.repeat(-alt) : '') };
           partNotes.push(n);
           if (ties.includes('start')) open[key] = n;
         }
@@ -719,6 +724,20 @@ const synth = {
   }
 };
 
+const ICON = {
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>',
+  prev: '<svg viewBox="0 0 24 24"><path d="M6 5h2.2v14H6zM19 5.5v13L9.5 12z" fill="currentColor"/></svg>',
+  next: '<svg viewBox="0 0 24 24"><path d="M15.8 5H18v14h-2.2zM5 5.5v13l9.5-6.5z" fill="currentColor"/></svg>',
+  loop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  listen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 16v-4a8 8 0 0 1 16 0v4"/><rect x="3" y="14" width="4.5" height="6.5" rx="1.6" fill="currentColor"/><rect x="16.5" y="14" width="4.5" height="6.5" rx="1.6" fill="currentColor"/></svg>',
+  wait: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 3h10M7 21h10"/><path d="M8 3c0 5 8 5 8 9s-8 4-8 9M16 3c0 5-8 5-8 9s8 4 8 9"/></svg>',
+  minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 12h12"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 12h12M12 6v12"/></svg>'
+};
+const HAND_LABEL = { R: 'П', L: 'Л', V: 'М' }, HAND_NAME = { R: 'Правая', L: 'Левая', V: 'Мелодия' };
+
 async function songPage(name) {
   const p = page(h('p', { class: 'feedback' }, 'Открываю песню…'));
   let song;
@@ -730,179 +749,282 @@ async function songPage(name) {
   } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   p.innerHTML = '';
   p.classList.add('wide');
-  const st = { hands: ['R', 'L'], mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70, running: false, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null };
+  const st = { hands: song.hands.includes('V') ? ['R', 'L'] : ['R', 'L'], mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70,
+    playing: false, running: false, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, fx: [], mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null, loopA: null };
+  const range = () => [Math.min(st.from, st.to), Math.max(st.from, st.to)];
+  const icon = (k, label, extra = {}) => h('button', { class: 'ibtn', 'aria-label': label, title: label, html: ICON[k], ...extra });
 
-  const seg = (opts, get, set) => h('div', { class: 'seg' }, opts.map(([v, label]) => { const b = h('button', { class: 'seg-b', onclick: () => { set(v); refreshSeg(); reset(); } }, label); b.dataset.v = JSON.stringify(v); b._get = get; return b; }));
-  const segs = [];
-  const refreshSeg = () => segs.forEach(s => s.querySelectorAll('.seg-b').forEach(b => b.classList.toggle('on', JSON.stringify(b._get()) === b.dataset.v)));
-  const handsSeg = seg([[['R'], 'Правая'], [['L'], 'Левая'], [['R', 'L'], 'Обе'], ...(song.hands.includes('V') ? [[['V'], 'Мелодия'], [['V', 'L'], 'Мелодия + левая']] : [])], () => st.hands, v => (st.hands = v));
-  const modeSeg = seg([['wait', 'Ждать меня'], ['listen', 'Послушать']], () => st.mode, v => (st.mode = v));
-  segs.push(handsSeg, modeSeg);
-  const num = (val, on) => h('input', { type: 'number', min: song.firstBar, max: song.bars, value: val, class: 'num', onchange: e => { on(Math.max(song.firstBar, Math.min(song.bars, +e.target.value || song.firstBar))); reset(); } });
-  const fromIn = num(song.firstBar, v => (st.from = v)), toIn = num(song.bars, v => (st.to = v));
-  const loopCb = h('input', { type: 'checkbox', checked: true, onchange: e => (st.loop = e.target.checked) });
-  const tempoVal = h('span', {}, '70%');
-  const tempoIn = h('input', { type: 'range', min: 30, max: 100, step: 5, value: 70, oninput: e => { st.tempo = +e.target.value; tempoVal.textContent = st.tempo + '%'; } });
-  const startBtn = h('button', { class: 'btn primary', onclick: () => (st.running ? stop() : start()) }, 'Старт');
-  const status = h('div', { class: 'player-status' });
-  const canvas = h('canvas', { class: 'roll' });
-  p.append(
+  /* ---- setup panel (shown before playing) ---- */
+  const handChips = (cls) => h('div', { class: cls }, song.hands.map(hd => {
+    const b = h('button', { class: 'chip hand-' + hd, 'aria-pressed': 'false', onclick: () => {
+      const on = st.hands.includes(hd); if (on && st.hands.length === 1) return;
+      st.hands = on ? st.hands.filter(x => x !== hd) : [...st.hands, hd]; syncUi(); reset(true);
+    } }, cls === 'chips' ? HAND_NAME[hd] : HAND_LABEL[hd]);
+    b.dataset.hand = hd; return b;
+  }));
+  const modeBtn = (m, label, cls) => h('button', { class: cls, 'data-mode': m, onclick: () => { const was = st.playing; pause(); st.mode = m; syncUi(); if (was) resume(); }, html: ICON[m] + `<span>${label}</span>` });
+  const num = (val, on) => h('input', { type: 'number', inputmode: 'numeric', min: song.firstBar, max: song.bars, value: val, class: 'num', onchange: e => { on(Math.max(song.firstBar, Math.min(song.bars, +e.target.value || song.firstBar))); syncUi(); reset(true); } });
+  const fromIn = num(st.from, v => (st.from = v)), toIn = num(st.to, v => (st.to = v));
+  const loopCb = h('input', { type: 'checkbox', checked: true, onchange: e => { st.loop = e.target.checked; syncUi(); } });
+  const tempoVal = h('span', { class: 'tempo-val' });
+  const tempoIn = h('input', { type: 'range', min: 30, max: 100, step: 5, value: st.tempo, oninput: e => setTempo(+e.target.value) });
+  const setup = h('div', { class: 'setup' },
     h('div', { class: 'lesson-head' }, h('a', { class: 'back', href: '#/songs' }, '‹ Все песни'), h('h1', {}, songTitle(name)),
       h('p', { class: 'goal' }, `${song.bars} тактов, размер ${song.ts[0]}/${song.ts[1]}, в оригинале ${song.bpm} BPM`)),
-    h('div', { class: 'player-controls' },
-      h('div', { class: 'row' }, handsSeg, modeSeg),
-      h('div', { class: 'row' }, h('label', { class: 'ctl' }, 'Такты', fromIn, '—', toIn), h('label', { class: 'ctl' }, loopCb, 'по кругу'),
-        h('label', { class: 'ctl tempo' }, 'Темп', tempoIn, tempoVal)),
-      h('div', { class: 'row' }, startBtn, h('button', { class: 'btn', onclick: () => { stop(); reset(); } }, 'В начало'), status)),
-    h('div', { class: 'roll-wrap' }, canvas),
-    h('p', { class: 'feedback', style: 'text-align:left' }, 'Застрял — самая нижняя клавиша (A0) пропускает текущие ноты.'));
-  refreshSeg();
+    h('div', { class: 'setup-grid' },
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Кто играет'), handChips('chips')),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Режим'), h('div', { class: 'seg' }, modeBtn('wait', 'Ждать меня', 'seg-b'), modeBtn('listen', 'Послушать', 'seg-b'))),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Такты'), h('div', { class: 'row' }, fromIn, h('span', { class: 'dash' }, '—'), toIn, h('label', { class: 'ctl' }, loopCb, 'по кругу'))),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Темп «Послушать»'), h('div', { class: 'row' }, tempoIn, tempoVal))),
+    h('div', { class: 'row' }, h('button', { class: 'btn primary big', onclick: enterPlay, html: ICON.play + '<span>Играть</span>' }),
+      h('p', { class: 'hint' }, 'В игре: тяни ноты пальцем, чтобы отмотать. Тап по номеру такта — играть оттуда, долгое нажатие на два такта — гонять кусок по кругу. На пианино: A0 — пропустить, B0 — такт назад.')));
 
-  // geometry
+  /* ---- play bar (fullscreen mode) ---- */
+  const playBtn = icon('play', 'Пауза / продолжить', { onclick: () => (st.playing ? pause() : resume()) });
+  const loopBtn = h('button', { class: 'chip loop', onclick: () => { st.loop = !st.loop; syncUi(); }, html: ICON.loop + '<span></span>' });
+  const tempoChip = h('div', { class: 'tempo-chip' }, icon('minus', 'Медленнее', { onclick: () => setTempo(st.tempo - 5) }), h('span', { class: 'tempo-val' }), icon('plus', 'Быстрее', { onclick: () => setTempo(st.tempo + 5) }));
+  const status = h('span', { class: 'pb-status' });
+  const playBar = h('div', { class: 'play-bar' },
+    icon('close', 'Выйти из игры', { onclick: exitPlay }),
+    h('div', { class: 'pb-group' }, icon('prev', 'Такт назад', { onclick: () => stepBar(-1) }), playBtn, icon('next', 'Такт вперёд', { onclick: () => stepBar(1) })),
+    loopBtn, handChips('pb-hands'),
+    h('div', { class: 'seg small' }, modeBtn('wait', 'Ждать', 'seg-b'), modeBtn('listen', 'Слушать', 'seg-b')),
+    tempoChip, status);
+  const canvas = h('canvas', { class: 'roll' });
+  const rollWrap = h('div', { class: 'roll-wrap' }, canvas);
+  p.append(setup, playBar, rollWrap);
+
+  function syncUi() {
+    document.querySelectorAll('.chip[data-hand]').forEach(b => { const on = st.hands.includes(b.dataset.hand); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+    p.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === st.mode));
+    const [a, b] = range();
+    fromIn.value = st.from; toIn.value = st.to; loopCb.checked = st.loop;
+    loopBtn.classList.toggle('on', st.loop); loopBtn.querySelector('span').textContent = `${a}–${b}`;
+    p.querySelectorAll('.tempo-val').forEach(x => (x.textContent = st.tempo + '%')); tempoIn.value = st.tempo;
+    tempoChip.hidden = st.mode !== 'listen';
+    playBtn.innerHTML = st.playing ? ICON.pause : ICON.play;
+    updateStatus();
+  }
+  function setTempo(v) { st.tempo = Math.max(30, Math.min(100, v)); const was = st.playing && st.mode === 'listen'; if (was) { pause(); resume(); } syncUi(); }
+
+  /* ---- geometry ---- */
   const isBlack = n => [1, 3, 6, 8, 10].includes(n % 12);
   let lo = Math.max(21, song.lo - 2), hi = Math.min(108, song.hi + 2);
   while (isBlack(lo)) lo--; while (isBlack(hi)) hi++;
   const whites = []; for (let n = lo; n <= hi; n++) if (!isBlack(n)) whites.push(n);
   const geo = {};
-  const layout = () => {
-    // fills the screen under the Start row, so when playing the keyboard is never below the fold
-    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, hgt = Math.round(Math.max(340, Math.min(window.innerHeight - 170, 1000)));
-    canvas.width = w * dpr; canvas.height = hgt * dpr; canvas.style.height = hgt + 'px';
+  function layout() {
+    const playMode = document.body.classList.contains('playing');
+    rollWrap.style.top = playMode ? playBar.offsetHeight + 'px' : '';
+    const dpr = window.devicePixelRatio || 1, w = rollWrap.clientWidth || canvas.clientWidth;
+    const hgt = playMode ? Math.max(300, window.innerHeight - playBar.offsetHeight) : Math.round(Math.max(300, Math.min(window.innerHeight * 0.45, 520)));
+    canvas.width = w * dpr; canvas.height = hgt * dpr; canvas.style.height = hgt + 'px'; canvas.style.width = w + 'px';
     const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const ww = w / whites.length, kh = Math.min(120, ww * 5.2);
+    const ww = w / whites.length, kh = Math.min(130, Math.max(70, ww * 5.2));
     Object.assign(geo, { ctx, w, h: hgt, ww, kh, area: hgt - kh, pxPerTick: (hgt - kh) / (song.ppq * 6) });
-    geo.x = {}; whites.forEach((n, i) => (geo.x[n] = { x: i * ww, w: ww, black: false }));
-    for (let n = lo; n <= hi; n++) if (isBlack(n)) { const l = geo.x[n - 1]; geo.x[n] = { x: l.x + ww - ww * 0.31, w: ww * 0.62, black: true }; }
-  };
+    geo.x = {}; whites.forEach((n, i) => (geo.x[n] = { x: i * ww, w: ww }));
+    for (let n = lo; n <= hi; n++) if (isBlack(n)) { const l = geo.x[n - 1]; geo.x[n] = { x: l.x + ww - ww * 0.31, w: ww * 0.62 }; }
+  }
 
-  const reset = () => {
-    st.events = buildEvents(song, st.hands, Math.min(st.from, st.to), Math.max(st.from, st.to));
-    st.idx = 0; st.pressed = new Set(); st.mistakes = 0; st.cleanEvents = 0; st.times = []; st.evMistake = false;
-    st.view = st.events[0] ? st.events[0].ticks - song.ppq : 0; st.evStart = performance.now();
-    updateStatus(); draw();
-  };
+  /* ---- position ---- */
   const cur = () => st.events[st.idx];
-  const updateStatus = () => {
-    const e = cur();
-    status.textContent = st.events.length ? `Такт ${e ? e.bar : Math.max(st.from, st.to)} · ошибок ${st.mistakes}` : 'В этих тактах нет нот для выбранной руки';
-  };
+  const barIndexAt = t => { let i = 0; while (i + 1 < song.barStarts.length && song.barStarts[i + 1] <= t) i++; return i; };
+  function reset(keepPos) {
+    const pos = keepPos && cur() ? cur().ticks : null;
+    st.events = buildEvents(song, st.hands, ...range());
+    st.idx = 0; st.pressed = new Set(); st.mistakes = 0; st.cleanEvents = 0; st.times = []; st.evMistake = false;
+    if (pos != null) { const i = st.events.findIndex(e => e.ticks >= pos - 1); st.idx = i < 0 ? 0 : i; }
+    st.view = cur() ? cur().ticks - song.ppq : 0; st.evStart = performance.now();
+    if (st.playing && st.mode === 'listen') startListen();
+    updateStatus();
+  }
+  function seekTicks(t, jump) {
+    const i = st.events.findIndex(e => e.ticks >= t - song.ppq / 16);
+    st.idx = i < 0 ? st.events.length - 1 : i; st.pressed = new Set(); st.evMistake = false; st.evStart = performance.now();
+    if (jump && cur()) st.view = cur().ticks;
+    if (st.playing && st.mode === 'listen') startListen();
+    updateStatus();
+  }
+  function stepBar(d) {
+    const bi = barIndexAt(cur() ? cur().ticks : st.view);
+    const tb = Math.max(0, Math.min(song.barStarts.length - 1, bi + d));
+    seekTicks(song.barStarts[tb]);
+  }
+  function updateStatus() {
+    const e = cur(), [a, b] = range();
+    status.textContent = st.events.length ? `Такт ${e ? e.bar : b}${st.mode === 'wait' ? ` · ошибок ${st.mistakes}` : ''}` : 'Нет нот для выбранных рук';
+  }
 
+  /* ---- drawing ---- */
+  function rr(ctx, x, y, w, hh, r) { r = Math.min(r, w / 2, hh / 2); ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + hh, r); ctx.arcTo(x + w, y + hh, x, y + hh, r); ctx.arcTo(x, y + hh, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
   function draw() {
     const { ctx, w, area, kh, pxPerTick } = geo; if (!ctx) return;
+    const now = performance.now();
     ctx.clearRect(0, 0, w, geo.h);
-    ctx.fillStyle = '#121726'; ctx.fillRect(0, 0, w, area);
-    // bar lines
-    ctx.font = '12px Golos Text, sans-serif'; ctx.textBaseline = 'bottom';
+    const bg = ctx.createLinearGradient(0, 0, 0, area); bg.addColorStop(0, '#0f1320'); bg.addColorStop(1, '#171d2d');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, w, area);
+    // faint key lanes for black keys
+    ctx.fillStyle = 'rgba(255,255,255,0.018)';
+    for (let n = lo; n <= hi; n++) if (isBlack(n)) ctx.fillRect(geo.x[n].x, 0, geo.x[n].w, area);
+    // bars
+    ctx.font = '600 12px Golos Text, sans-serif'; ctx.textBaseline = 'middle';
+    const [ra, rb] = range();
     for (let b = 0; b < song.barStarts.length; b++) {
-      const y = area - (song.barStarts[b] - st.view) * pxPerTick; if (y > area + 2) continue; if (y < 0) break;
-      ctx.fillStyle = '#2a3349'; ctx.fillRect(0, y, w, 1); ctx.fillStyle = '#6f7690'; ctx.fillText(String(song.barNums[b]), 6, y - 3);
+      const y = area - (song.barStarts[b] - st.view) * pxPerTick; if (y > area + 2) continue; if (y < -10) break;
+      const num = song.barNums[b], inLoop = st.loop && num >= ra && num <= rb, isA = st.loopA === num;
+      ctx.fillStyle = inLoop ? 'rgba(242,165,65,0.22)' : 'rgba(255,255,255,0.07)'; ctx.fillRect(0, y, w, 1);
+      const label = String(num), tw = ctx.measureText(label).width + 14;
+      ctx.fillStyle = isA ? COLORS.right : inLoop ? 'rgba(242,165,65,0.18)' : 'rgba(255,255,255,0.06)'; rr(ctx, 6, y - 11, tw, 20, 10); ctx.fill();
+      ctx.fillStyle = isA ? '#24180a' : inLoop ? COLORS.right : '#8a90a5'; ctx.fillText(label, 13, y - 1);
     }
     // notes
-    const curNotes = new Set((cur()?.notes || []));
+    const curT = cur() ? cur().ticks : Infinity;
     for (const ev of st.events) {
-      if ((ev.ticks - st.view) * pxPerTick > area + 40) break;
+      if ((ev.ticks - st.view) * pxPerTick > area + 60) break;
+      const isCur = ev.ticks === curT, done = st.mode === 'wait' && ev.ticks < curT;
       for (const n of ev.notes) {
         const g = geo.x[n.midi]; if (!g) continue;
-        const y0 = area - (n.ticks - st.view) * pxPerTick, hh = Math.max(8, n.dur * pxPerTick - 2);
-        if (y0 < -10) continue;
-        const done = ev.ticks < (cur()?.ticks ?? Infinity) && st.mode === 'wait';
-        ctx.globalAlpha = done ? 0.25 : curNotes.has(n) ? 1 : 0.78;
-        ctx.fillStyle = HAND_COLOR[n.hand];
-        roundRect(ctx, g.x + 2, y0 - hh, g.w - 4, hh, 5); ctx.fill();
-        if (g.w >= 16 && hh >= 14) { ctx.fillStyle = '#161b29'; ctx.font = `600 ${Math.min(13, g.w * 0.5)}px Golos Text, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(pcName(n.midi), g.x + g.w / 2, y0 - 3); ctx.textAlign = 'left'; }
+        const y0 = area - (n.ticks - st.view) * pxPerTick, hh = Math.max(9, n.dur * pxPerTick - 3);
+        if (y0 < -4 || y0 - hh > area) continue;
+        const col = HAND_COLOR[n.hand];
+        ctx.globalAlpha = done ? 0.14 : isCur ? 1 : 0.82;
+        if (isCur) { ctx.shadowColor = col; ctx.shadowBlur = 18; }
+        ctx.fillStyle = col; rr(ctx, g.x + 2, y0 - hh, g.w - 4, hh, 6); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(255,255,255,0.22)'; rr(ctx, g.x + 3, y0 - hh + 1, g.w - 6, Math.min(4, hh / 3), 3); ctx.fill();
+        if (g.w >= 16 && hh >= 16) { ctx.fillStyle = 'rgba(15,19,32,0.85)'; ctx.font = `700 ${Math.min(13, g.w * 0.48)}px Golos Text, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(n.label || pcName(n.midi), g.x + g.w / 2, y0 - 4); ctx.textAlign = 'left'; }
         ctx.globalAlpha = 1;
       }
     }
-    // now line
-    ctx.fillStyle = COLORS.paper; ctx.fillRect(0, area - 1, w, 2);
+    // now line with glow
+    const glow = ctx.createLinearGradient(0, area - 26, 0, area); glow.addColorStop(0, 'rgba(237,231,217,0)'); glow.addColorStop(1, 'rgba(237,231,217,0.10)');
+    ctx.fillStyle = glow; ctx.fillRect(0, area - 26, w, 26);
+    ctx.fillStyle = 'rgba(237,231,217,0.85)'; ctx.fillRect(0, area - 1.5, w, 2);
+    // hit bursts
+    st.fx = st.fx.filter(f => now - f.t < 420);
+    for (const f of st.fx) {
+      const g = geo.x[f.midi]; if (!g) continue; const k = (now - f.t) / 420;
+      ctx.globalAlpha = 1 - k; ctx.strokeStyle = f.color; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(g.x + g.w / 2, area, g.w * (0.5 + k * 1.2), 6 + k * 22, 0, Math.PI, 2 * Math.PI); ctx.stroke(); ctx.globalAlpha = 1;
+    }
     // keyboard
     const need = {}; for (const n of (cur()?.notes || [])) need[n.midi] = HAND_COLOR[n.hand];
-    const held = midi.held, now = performance.now();
-    const keyColor = n => (st.wrongFlash[n] > now ? COLORS.wrong : st.pressed.has(n) && need[n] ? '#ffffff' : need[n] || null);
-    for (const n of whites) { const g = geo.x[n], c = keyColor(n); ctx.fillStyle = c || (held.has(n) ? '#cfd3df' : COLORS.paper); roundRect(ctx, g.x + 1, area + 1, g.w - 2, kh - 2, 4); ctx.fill(); if (n === 60) { ctx.fillStyle = '#8a90a5'; ctx.beginPath(); ctx.arc(g.x + g.w / 2, area + kh - 12, 3, 0, 7); ctx.fill(); } }
-    for (let n = lo; n <= hi; n++) { if (!isBlack(n)) continue; const g = geo.x[n], c = keyColor(n); ctx.fillStyle = c || (held.has(n) ? '#4a5270' : '#1b2030'); roundRect(ctx, g.x, area + 1, g.w, kh * 0.62, 3); ctx.fill(); }
+    const held = midi.held;
+    const fill = (n, black) => st.wrongFlash[n] > now ? COLORS.wrong : held.has(n) && need[n] ? '#ffffff' : need[n] || (held.has(n) ? (black ? '#59617e' : '#c7ccda') : black ? '#1b2030' : COLORS.paper);
+    for (const n of whites) {
+      const g = geo.x[n], down = held.has(n) ? 2 : 0;
+      ctx.fillStyle = fill(n, false); rr(ctx, g.x + 1, area + 2 + down, g.w - 2, kh - 4, 5); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(g.x + 1, area + kh - 8 + down, g.w - 2, 4);
+      if (n === 60) { ctx.fillStyle = '#8a90a5'; ctx.beginPath(); ctx.arc(g.x + g.w / 2, area + kh - 16, 3, 0, 7); ctx.fill(); }
+    }
+    for (let n = lo; n <= hi; n++) { if (!isBlack(n)) continue; const g = geo.x[n], down = held.has(n) ? 2 : 0; ctx.fillStyle = fill(n, true); rr(ctx, g.x, area + 2 + down, g.w, kh * 0.6, 4); ctx.fill(); }
   }
-  function roundRect(ctx, x, y, w, hh, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + hh, r); ctx.arcTo(x + w, y + hh, x, y + hh, r); ctx.arcTo(x, y + hh, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
-  // smooth follow in wait mode
+  /* ---- loop over frames ---- */
   function tick() {
-    if (st.mode === 'wait') {
-      const target = cur() ? cur().ticks : st.view;
-      st.view += (target - st.view) * 0.18;
-    } else if (st.play) {
+    if (st.mode === 'wait' || !st.play) {
+      if (!st.dragging) { const target = cur() ? cur().ticks : st.view; st.view += (target - st.view) * 0.16; }
+    } else {
       const t = (synth.ctx.currentTime - st.play.t0) * st.tempo / 100 + st.play.sec0;
       st.view = song.s2t(t);
-      while (cur() && cur().ticks <= st.view) st.idx++;
-      updateStatus();
-      if (!cur() && st.view > (st.events[st.events.length - 1]?.ticks || 0) + song.ppq * 2) { if (st.loop && st.running) { startListen(); } else stop(); }
+      let moved = false; while (cur() && cur().ticks <= st.view) { st.idx++; moved = true; }
+      if (moved) updateStatus();
+      const last = st.events[st.events.length - 1];
+      if (!cur() && last && st.view > last.ticks + song.ppq * 2) { if (st.loop) { st.idx = 0; startListen(); } else pause(); }
     }
     draw();
     st.raf = requestAnimationFrame(tick);
   }
 
+  /* ---- MIDI input ---- */
   const ctrl = {
     onMidi(e) {
-      if (!e.on) { draw(); return; }
-      if (st.mode !== 'wait' || !st.running) { draw(); return; }
+      if (!e.on || !st.playing) return;
+      if (e.note === 23) { stepBar(-1); return; }
+      if (st.mode !== 'wait') return;
       const ev = cur(); if (!ev) return;
       if (e.note === 21) { st.mistakes++; st.evMistake = true; advance(); return; }
       const need = new Set(ev.notes.map(n => n.midi));
-      if (need.has(e.note)) st.pressed.add(e.note);
-      else { st.mistakes++; st.evMistake = true; st.wrongFlash[e.note] = performance.now() + 350; }
+      if (need.has(e.note)) { st.pressed.add(e.note); st.fx.push({ midi: e.note, t: performance.now(), color: HAND_COLOR[ev.notes.find(n => n.midi === e.note).hand] }); }
+      else { st.mistakes++; st.evMistake = true; st.wrongFlash[e.note] = performance.now() + 380; }
       if ([...need].every(n => st.pressed.has(n))) advance();
-      draw();
+      updateStatus();
     },
-    stop() { stop(); }
+    stop() { pause(); }
   };
   function advance() {
     st.times.push(performance.now() - st.evStart);
     if (!st.evMistake) st.cleanEvents++;
     st.idx++; st.pressed = new Set(); st.evMistake = false; st.evStart = performance.now();
     if (!cur()) finishPass();
-    updateStatus();
   }
   function finishPass() {
-    const total = st.events.length, acc = total ? st.cleanEvents / total : 0;
+    const total = st.events.length, acc = total ? st.cleanEvents / total : 0, [a, b] = range();
     const status = acc >= 0.9 ? 'passed' : 'needs-practice';
-    const lessonMeta = { id: songId(name) };
-    const handKey = st.hands.length === 2 ? 'both' : st.hands[0] === 'R' ? 'right' : 'left';
-    saveResult(lessonMeta, { id: `${handKey}-${Math.min(st.from, st.to)}-${Math.max(st.from, st.to)}` },
-      { accuracy: Math.round(acc * 1000) / 1000, avgResponseMs: Math.round(st.times.reduce((a, b) => a + b, 0) / Math.max(1, st.times.length)), status, checkedBy: 'midi' });
+    saveResult({ id: songId(name) }, { id: `${st.hands.slice().sort().join('').toLowerCase()}-${a}-${b}` },
+      { accuracy: Math.round(acc * 1000) / 1000, avgResponseMs: Math.round(st.times.reduce((x, y) => x + y, 0) / Math.max(1, st.times.length)), status, checkedBy: 'midi' });
     toast(`Проход: ${Math.round(acc * 100)}% без ошибок${status === 'passed' ? ' — зачёт' : ''}`);
-    if (st.loop) { st.idx = 0; st.cleanEvents = 0; st.mistakes = 0; st.times = []; st.view = st.events[0].ticks - song.ppq; }
-    else stop();
-  }
-  function startListen() {
-    synth.silence(); synth.newBus(); synth.ctx.resume();
-    st.idx = 0;
-    const first = st.events[0]; if (!first) return;
-    const sec0 = first.time, t0 = synth.ctx.currentTime + 0.4, rate = st.tempo / 100;
-    st.play = { t0, sec0 };
-    for (const ev of st.events) for (const n of ev.notes) {
-      const durSec = song.t2s(n.ticks + n.dur) - n.time;
-      synth.play(n.midi, t0 + (n.time - sec0) / rate, durSec / rate);
-    }
-  }
-  function start() {
-    if (!st.events.length) return;
-    st.running = true; startBtn.textContent = 'Стоп';
-    const row = startBtn.parentElement; window.scrollTo({ top: row.getBoundingClientRect().top + window.scrollY - 76, behavior: 'smooth' });
-    activate(ctrl); keepAwake();
-    if (st.mode === 'listen') startListen(); else { st.evStart = performance.now(); }
-  }
-  function stop() {
-    st.running = false; startBtn.textContent = 'Старт';
-    synth.silence(); st.play = null;
-    if (active === ctrl) { active = null; midi.listener = null; }
+    st.cleanEvents = 0; st.mistakes = 0; st.times = [];
+    if (st.loop) { st.idx = 0; } else { st.idx = total - 1; pause(); }
   }
 
-  layout(); reset();
+  /* ---- listen ---- */
+  function startListen() {
+    synth.silence(); synth.newBus(); synth.ctx.resume();
+    const first = cur() || st.events[0]; if (!first) return;
+    const from = st.events.indexOf(first), sec0 = first.time, rate = st.tempo / 100, t0 = synth.ctx.currentTime + 0.25;
+    st.play = { t0, sec0 };
+    for (let i = from; i < st.events.length; i++) for (const n of st.events[i].notes) synth.play(n.midi, t0 + (n.time - sec0) / rate, (song.t2s(n.ticks + n.dur) - n.time) / rate);
+  }
+
+  /* ---- states ---- */
+  function resume() {
+    if (!st.events.length) return;
+    st.playing = true; activate(ctrl); keepAwake();
+    if (st.mode === 'listen') startListen(); else { synth.silence(); st.play = null; st.evStart = performance.now(); }
+    syncUi();
+  }
+  function pause() { st.playing = false; synth.silence(); st.play = null; syncUi(); }
+  function enterPlay() { document.body.classList.add('playing'); window.scrollTo(0, 0); layout(); resume(); }
+  function exitPlay() { pause(); document.body.classList.remove('playing'); layout(); }
+
+  /* ---- touch: drag to scrub, tap bar number to jump, long-press two bars to loop ---- */
+  let ptr = null;
+  canvas.addEventListener('pointerdown', e => {
+    const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    if (y > geo.area) return;
+    ptr = { x, y, view: st.view, moved: false, long: false, wasPlaying: st.playing && st.mode === 'listen' };
+    canvas.setPointerCapture(e.pointerId);
+    ptr.timer = setTimeout(() => { if (!ptr || ptr.moved || x > 64) return; ptr.long = true; markLoop(barAtY(y)); }, 550);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!ptr) return;
+    const r = canvas.getBoundingClientRect(), dy = e.clientY - r.top - ptr.y;
+    if (!ptr.moved && Math.abs(dy) < 8) return;
+    if (!ptr.moved) { ptr.moved = true; clearTimeout(ptr.timer); st.dragging = true; if (ptr.wasPlaying) { synth.silence(); st.play = null; } }
+    st.view = Math.max((song.barStarts[0] || 0) - song.ppq, ptr.view + dy / geo.pxPerTick);
+  });
+  const endPtr = () => {
+    if (!ptr) return; clearTimeout(ptr.timer);
+    if (ptr.moved) { st.dragging = false; seekTicks(st.view, true); if (ptr.wasPlaying && st.playing) startListen(); }
+    else if (!ptr.long && ptr.x <= 64) { const num = barAtY(ptr.y); const i = song.barNums.indexOf(num); if (i >= 0) seekTicks(song.barStarts[i], true); }
+    ptr = null;
+  };
+  canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+  function barAtY(y) { const t = st.view + (geo.area - y) / geo.pxPerTick; return song.barNums[barIndexAt(t)]; }
+  function markLoop(num) {
+    if (st.loopA == null) { st.loopA = num; toast(`Начало круга: такт ${num}. Зажми такт конца`); return; }
+    st.from = Math.min(st.loopA, num); st.to = Math.max(st.loopA, num); st.loopA = null; st.loop = true;
+    syncUi(); reset(false); toast(`Круг: такты ${st.from}–${st.to}`);
+  }
+
+  layout(); reset(); syncUi();
   if (window.__klavishi) { window.__klavishi.player = st; window.__klavishi.song = song; }
-  const onResize = () => { layout(); draw(); };
+  const onResize = () => { layout(); };
   window.addEventListener('resize', onResize);
   st.raf = requestAnimationFrame(tick);
   activate(ctrl);
-  const cleanup = () => { cancelAnimationFrame(st.raf); window.removeEventListener('resize', onResize); stop(); window.removeEventListener('hashchange', cleanup); };
+  const cleanup = () => { cancelAnimationFrame(st.raf); window.removeEventListener('resize', onResize); pause(); document.body.classList.remove('playing'); window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
 }
 
