@@ -712,7 +712,12 @@ const synth = {
   ctx: null, bus: null,
   // every playback gets its own bus; Stop disconnects it, which silences notes already scheduled ahead
   newBus() { this.ctx = this.ctx || metro.ctx || new (window.AudioContext || window.webkitAudioContext)(); metro.ctx = this.ctx; this.bus = this.ctx.createGain(); this.bus.connect(this.ctx.destination); },
-  silence() { if (this.bus) { try { this.bus.disconnect(); } catch { /* already gone */ } this.bus = null; } },
+  live: new Set(),
+  silence() {
+    for (const v of this.live) { try { v.forEach(o => o.stop(0)); } catch { /* not started yet is fine */ } }
+    this.live.clear();
+    if (this.bus) { try { this.bus.disconnect(); } catch { /* already gone */ } this.bus = null; }
+  },
   play(midiNote, when, dur, vel = 0.25) {
     if (!this.bus) this.newBus();
     const f = 440 * Math.pow(2, (midiNote - 69) / 12), o = this.ctx.createOscillator(), o2 = this.ctx.createOscillator(), g = this.ctx.createGain();
@@ -721,6 +726,7 @@ const synth = {
     g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(vel, when + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, when + Math.min(Math.max(dur, 0.25), 2.5));
     o.connect(g); o2.connect(g2).connect(g); g.connect(this.bus);
     o.start(when); o2.start(when); o.stop(when + 2.6); o2.stop(when + 2.6);
+    const voice = [o, o2]; this.live.add(voice); o.onended = () => this.live.delete(voice);
   }
 };
 
@@ -925,6 +931,7 @@ async function songPage(name) {
     if (st.mode === 'wait' || !st.play) {
       if (!st.dragging) { const target = cur() ? cur().ticks : st.view; st.view += (target - st.view) * 0.16; }
     } else {
+      pump();
       const t = (synth.ctx.currentTime - st.play.t0) * st.tempo / 100 + st.play.sec0;
       st.view = song.s2t(t);
       let moved = false; while (cur() && cur().ticks <= st.view) { st.idx++; moved = true; }
@@ -969,12 +976,22 @@ async function songPage(name) {
   }
 
   /* ---- listen ---- */
+  // only the next ~1.5 s of notes are queued; pump() tops the queue up as playback moves (never the whole song at once)
   function startListen() {
     synth.silence(); synth.newBus(); synth.ctx.resume();
     const first = cur() || st.events[0]; if (!first) return;
-    const from = st.events.indexOf(first), sec0 = first.time, rate = st.tempo / 100, t0 = synth.ctx.currentTime + 0.25;
-    st.play = { t0, sec0 };
-    for (let i = from; i < st.events.length; i++) for (const n of st.events[i].notes) synth.play(n.midi, t0 + (n.time - sec0) / rate, (song.t2s(n.ticks + n.dur) - n.time) / rate);
+    st.play = { t0: synth.ctx.currentTime + 0.2, sec0: first.time, next: st.events.indexOf(first) };
+    pump();
+  }
+  function pump() {
+    const pl = st.play; if (!pl || !synth.bus) return;
+    const rate = st.tempo / 100, horizon = synth.ctx.currentTime + 1.5;
+    while (pl.next < st.events.length) {
+      const ev = st.events[pl.next], when = pl.t0 + (ev.time - pl.sec0) / rate;
+      if (when > horizon) break;
+      if (when >= synth.ctx.currentTime - 0.05) for (const n of ev.notes) synth.play(n.midi, when, (song.t2s(n.ticks + n.dur) - n.time) / rate);
+      pl.next++;
+    }
   }
 
   /* ---- states ---- */
@@ -1006,7 +1023,7 @@ async function songPage(name) {
   });
   const endPtr = () => {
     if (!ptr) return; clearTimeout(ptr.timer);
-    if (ptr.moved) { st.dragging = false; seekTicks(st.view, true); if (ptr.wasPlaying && st.playing) startListen(); }
+    if (ptr.moved) { st.dragging = false; seekTicks(st.view, true); }
     else if (!ptr.long && ptr.x <= 64) { const num = barAtY(ptr.y); const i = song.barNums.indexOf(num); if (i >= 0) seekTicks(song.barStarts[i], true); }
     ptr = null;
   };
@@ -1019,7 +1036,7 @@ async function songPage(name) {
   }
 
   layout(); reset(); syncUi();
-  if (window.__klavishi) { window.__klavishi.player = st; window.__klavishi.song = song; }
+  if (window.__klavishi) { window.__klavishi.player = st; window.__klavishi.song = song; window.__klavishi.synth = synth; }
   const onResize = () => { layout(); };
   window.addEventListener('resize', onResize);
   st.raf = requestAnimationFrame(tick);
