@@ -573,10 +573,260 @@ function exercisesPage() {
   page(hero('Упражнения', 'Библиотека упражнений по темам и то, что сейчас в фокусе.'),
     h('div', { class: 'empty' }, h('strong', {}, 'Скоро здесь'), 'Арпеджио, синхронность рук, аккорды и смены, интервалы, гаммы и знаки. Каждое упражнение — зачем оно, как делать правильно, варианты и ступени темпа. Метроном уже есть сверху справа.'));
 }
-function songsPage() {
-  page(hero('Песни', 'Вставляешь аккорды песни — каждый аккорд становится кнопкой с аппликатурой для двух рук.'),
-    h('div', { class: 'empty' }, h('strong', {}, 'Переезжает сюда следующим шагом'), 'Разбор «Натали» из Claude переносится в этот раздел.'));
+/* ---------------- songs: list + MIDI player ---------------- */
+const b64ToBytes = b64 => { const bin = atob(b64); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
+const songTitle = n => n.replace(/\.(mid|midi|musicxml|xml)$/i, '');
+const songId = n => 'song-' + (songTitle(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'x');
+const HAND_COLOR = { R: COLORS.right, L: COLORS.left };
+
+async function songsPage() {
+  const p = page(hero('Песни', 'Мелодия и аккомпанемент по нотам: приложение ждёт, пока сыграешь нужные клавиши, и ведёт дальше.'));
+  const body = h('div', {}, h('p', { class: 'feedback' }, 'Загружаю песни…')); p.append(body);
+  let list;
+  try { list = (await bridge.get({ action: 'songs' })).songs; }
+  catch (e) { body.innerHTML = ''; body.append(h('div', { class: 'empty' }, h('strong', {}, 'Песни не загрузились'), e.message.includes('unknown action') ? 'Мост ещё старой версии — обнови Code.gs в Apps Script.' : e.message)); return; }
+  body.innerHTML = '';
+  const prog = store.get(K.progress, {});
+  if (!list.length) body.append(h('div', { class: 'empty' }, h('strong', {}, 'Песен пока нет'), 'Положи MIDI-файл в Google Drive → Music/Piano/songs — он появится здесь.'));
+  else body.append(h('ul', { class: 'lesson-list' }, list.map(s => {
+    const done = Object.values(prog[songId(s.name)] || {});
+    const st = done.includes('passed') ? 'going' : done.length ? 'going' : '';
+    return h('li', {}, h('a', { class: 'lesson-row', href: '#/song/' + encodeURIComponent(s.name) },
+      h('div', { class: 'motif', html: motif(s.name, { w: 96, h: 44, n: 4 }) }),
+      h('div', {}, h('div', { class: 't' }, songTitle(s.name)), h('div', { class: 'g' }, /\.mid/i.test(s.name) ? 'MIDI' : 'MusicXML — пока не поддерживается')),
+      h('span', { class: 'state ' + st }, done.length ? `проходов: ${done.length}` : 'новая')));
+  })));
+  body.append(h('p', { class: 'feedback', style: 'text-align:left;margin-top:22px' }, 'Добавить песню: MIDI-файл в Google Drive → Music/Piano/songs. Разбор по аккордам переедет сюда следующим шагом.'));
 }
+
+function prepareSong(m) {
+  const tracks = m.tracks.filter(t => t.notes.length);
+  const avg = t => t.notes.reduce((a, n) => a + n.midi, 0) / t.notes.length;
+  const notes = [];
+  if (tracks.length >= 2) {
+    const sorted = tracks.slice().sort((a, b) => avg(b) - avg(a));
+    const rAvg = avg(sorted[0]), lAvg = avg(sorted[sorted.length - 1]);
+    for (const t of sorted) { const hand = Math.abs(avg(t) - rAvg) <= Math.abs(avg(t) - lAvg) ? 'R' : 'L'; for (const n of t.notes) notes.push({ midi: n.midi, ticks: n.ticks, dur: n.durationTicks, time: n.time, hand }); }
+  } else for (const n of (tracks[0]?.notes || [])) notes.push({ midi: n.midi, ticks: n.ticks, dur: n.durationTicks, time: n.time, hand: n.midi >= 60 ? 'R' : 'L' });
+  notes.sort((a, b) => a.ticks - b.ticks || a.midi - b.midi);
+  const ppq = m.header.ppq, ts = m.header.timeSignatures[0]?.timeSignature || [4, 4];
+  const bar = ppq * 4 * ts[0] / ts[1];
+  for (const n of notes) n.bar = Math.floor(n.ticks / bar) + 1;
+  const lo = Math.min(...notes.map(n => n.midi)), hi = Math.max(...notes.map(n => n.midi));
+  return { m, notes, ppq, ts, barTicks: bar, bars: notes.length ? notes[notes.length - 1].bar : 0, lo, hi, bpm: Math.round(m.header.tempos[0]?.bpm || 100) };
+}
+function buildEvents(song, hands, from, to) {
+  const tol = song.ppq / 16, ev = [];
+  for (const n of song.notes) {
+    if (!hands.includes(n.hand) || n.bar < from || n.bar > to) continue;
+    const last = ev[ev.length - 1];
+    if (last && n.ticks - last.ticks <= tol) last.notes.push(n); else ev.push({ ticks: n.ticks, time: n.time, bar: n.bar, notes: [n] });
+  }
+  return ev;
+}
+
+// one tiny synth for "listen"
+const synth = {
+  ctx: null,
+  play(midiNote, when, dur, vel = 0.25) {
+    this.ctx = this.ctx || metro.ctx || new (window.AudioContext || window.webkitAudioContext)(); metro.ctx = this.ctx;
+    const f = 440 * Math.pow(2, (midiNote - 69) / 12), o = this.ctx.createOscillator(), o2 = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = 'triangle'; o.frequency.value = f; o2.type = 'sine'; o2.frequency.value = f * 2;
+    const g2 = this.ctx.createGain(); g2.gain.value = 0.25;
+    g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(vel, when + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, when + Math.min(Math.max(dur, 0.25), 2.5));
+    o.connect(g); o2.connect(g2).connect(g); g.connect(this.ctx.destination);
+    o.start(when); o2.start(when); o.stop(when + 2.6); o2.stop(when + 2.6);
+  }
+};
+
+async function songPage(name) {
+  const p = page(h('p', { class: 'feedback' }, 'Открываю песню…'));
+  let song;
+  try {
+    if (!/\.midi?$/i.test(name)) throw new Error('MusicXML пока не поддерживается — нужен .mid');
+    const d = await bridge.get({ action: 'song', name });
+    song = prepareSong(new Midi(b64ToBytes(d.data)));
+    if (!song.notes.length) throw new Error('в файле нет нот');
+  } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
+  p.innerHTML = '';
+  p.classList.add('wide');
+  const st = { hands: ['R', 'L'], mode: 'wait', from: 1, to: song.bars, loop: true, tempo: 70, running: false, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null };
+
+  const seg = (opts, get, set) => h('div', { class: 'seg' }, opts.map(([v, label]) => { const b = h('button', { class: 'seg-b', onclick: () => { set(v); refreshSeg(); reset(); } }, label); b.dataset.v = JSON.stringify(v); b._get = get; return b; }));
+  const segs = [];
+  const refreshSeg = () => segs.forEach(s => s.querySelectorAll('.seg-b').forEach(b => b.classList.toggle('on', JSON.stringify(b._get()) === b.dataset.v)));
+  const handsSeg = seg([[['R'], 'Правая'], [['L'], 'Левая'], [['R', 'L'], 'Обе']], () => st.hands, v => (st.hands = v));
+  const modeSeg = seg([['wait', 'Ждать меня'], ['listen', 'Послушать']], () => st.mode, v => (st.mode = v));
+  segs.push(handsSeg, modeSeg);
+  const num = (val, on) => h('input', { type: 'number', min: 1, max: song.bars, value: val, class: 'num', onchange: e => { on(Math.max(1, Math.min(song.bars, +e.target.value || 1))); reset(); } });
+  const fromIn = num(1, v => (st.from = v)), toIn = num(song.bars, v => (st.to = v));
+  const loopCb = h('input', { type: 'checkbox', checked: true, onchange: e => (st.loop = e.target.checked) });
+  const tempoVal = h('span', {}, '70%');
+  const tempoIn = h('input', { type: 'range', min: 30, max: 100, step: 5, value: 70, oninput: e => { st.tempo = +e.target.value; tempoVal.textContent = st.tempo + '%'; } });
+  const startBtn = h('button', { class: 'btn primary', onclick: () => (st.running ? stop() : start()) }, 'Старт');
+  const status = h('div', { class: 'player-status' });
+  const canvas = h('canvas', { class: 'roll' });
+  p.append(
+    h('div', { class: 'lesson-head' }, h('a', { class: 'back', href: '#/songs' }, '‹ Все песни'), h('h1', {}, songTitle(name)),
+      h('p', { class: 'goal' }, `${song.bars} тактов, размер ${song.ts[0]}/${song.ts[1]}, в оригинале ${song.bpm} BPM`)),
+    h('div', { class: 'player-controls' },
+      h('div', { class: 'row' }, handsSeg, modeSeg),
+      h('div', { class: 'row' }, h('label', { class: 'ctl' }, 'Такты', fromIn, '—', toIn), h('label', { class: 'ctl' }, loopCb, 'по кругу'),
+        h('label', { class: 'ctl tempo' }, 'Темп', tempoIn, tempoVal)),
+      h('div', { class: 'row' }, startBtn, h('button', { class: 'btn', onclick: () => { stop(); reset(); } }, 'В начало'), status)),
+    h('div', { class: 'roll-wrap' }, canvas),
+    h('p', { class: 'feedback', style: 'text-align:left' }, 'Застрял — самая нижняя клавиша (A0) пропускает текущие ноты.'));
+  refreshSeg();
+
+  // geometry
+  const isBlack = n => [1, 3, 6, 8, 10].includes(n % 12);
+  let lo = Math.max(21, song.lo - 2), hi = Math.min(108, song.hi + 2);
+  while (isBlack(lo)) lo--; while (isBlack(hi)) hi++;
+  const whites = []; for (let n = lo; n <= hi; n++) if (!isBlack(n)) whites.push(n);
+  const geo = {};
+  const layout = () => {
+    // fills the screen under the Start row, so when playing the keyboard is never below the fold
+    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, hgt = Math.round(Math.max(340, Math.min(window.innerHeight - 170, 1000)));
+    canvas.width = w * dpr; canvas.height = hgt * dpr; canvas.style.height = hgt + 'px';
+    const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ww = w / whites.length, kh = Math.min(120, ww * 5.2);
+    Object.assign(geo, { ctx, w, h: hgt, ww, kh, area: hgt - kh, pxPerTick: (hgt - kh) / (song.ppq * 6) });
+    geo.x = {}; whites.forEach((n, i) => (geo.x[n] = { x: i * ww, w: ww, black: false }));
+    for (let n = lo; n <= hi; n++) if (isBlack(n)) { const l = geo.x[n - 1]; geo.x[n] = { x: l.x + ww - ww * 0.31, w: ww * 0.62, black: true }; }
+  };
+
+  const reset = () => {
+    st.events = buildEvents(song, st.hands, Math.min(st.from, st.to), Math.max(st.from, st.to));
+    st.idx = 0; st.pressed = new Set(); st.mistakes = 0; st.cleanEvents = 0; st.times = []; st.evMistake = false;
+    st.view = st.events[0] ? st.events[0].ticks - song.ppq : 0; st.evStart = performance.now();
+    updateStatus(); draw();
+  };
+  const cur = () => st.events[st.idx];
+  const updateStatus = () => {
+    const e = cur();
+    status.textContent = st.events.length ? `Такт ${e ? e.bar : Math.max(st.from, st.to)} · ошибок ${st.mistakes}` : 'В этих тактах нет нот для выбранной руки';
+  };
+
+  function draw() {
+    const { ctx, w, area, kh, pxPerTick } = geo; if (!ctx) return;
+    ctx.clearRect(0, 0, w, geo.h);
+    ctx.fillStyle = '#121726'; ctx.fillRect(0, 0, w, area);
+    // bar lines
+    const firstBar = Math.floor(st.view / song.barTicks);
+    ctx.font = '12px Golos Text, sans-serif'; ctx.textBaseline = 'bottom';
+    for (let b = firstBar; b < firstBar + 10; b++) {
+      const y = area - (b * song.barTicks - st.view) * pxPerTick; if (y < 0) break;
+      ctx.fillStyle = '#2a3349'; ctx.fillRect(0, y, w, 1); ctx.fillStyle = '#6f7690'; ctx.fillText(String(b + 1), 6, y - 3);
+    }
+    // notes
+    const curNotes = new Set((cur()?.notes || []));
+    for (const ev of st.events) {
+      if ((ev.ticks - st.view) * pxPerTick > area + 40) break;
+      for (const n of ev.notes) {
+        const g = geo.x[n.midi]; if (!g) continue;
+        const y0 = area - (n.ticks - st.view) * pxPerTick, hh = Math.max(8, n.dur * pxPerTick - 2);
+        if (y0 < -10) continue;
+        const done = ev.ticks < (cur()?.ticks ?? Infinity) && st.mode === 'wait';
+        ctx.globalAlpha = done ? 0.25 : curNotes.has(n) ? 1 : 0.78;
+        ctx.fillStyle = HAND_COLOR[n.hand];
+        roundRect(ctx, g.x + 2, y0 - hh, g.w - 4, hh, 5); ctx.fill();
+        if (g.w >= 16 && hh >= 14) { ctx.fillStyle = '#161b29'; ctx.font = `600 ${Math.min(13, g.w * 0.5)}px Golos Text, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(pcName(n.midi), g.x + g.w / 2, y0 - 3); ctx.textAlign = 'left'; }
+        ctx.globalAlpha = 1;
+      }
+    }
+    // now line
+    ctx.fillStyle = COLORS.paper; ctx.fillRect(0, area - 1, w, 2);
+    // keyboard
+    const need = {}; for (const n of (cur()?.notes || [])) need[n.midi] = HAND_COLOR[n.hand];
+    const held = midi.held, now = performance.now();
+    const keyColor = n => (st.wrongFlash[n] > now ? COLORS.wrong : st.pressed.has(n) && need[n] ? '#ffffff' : need[n] || null);
+    for (const n of whites) { const g = geo.x[n], c = keyColor(n); ctx.fillStyle = c || (held.has(n) ? '#cfd3df' : COLORS.paper); roundRect(ctx, g.x + 1, area + 1, g.w - 2, kh - 2, 4); ctx.fill(); if (n === 60) { ctx.fillStyle = '#8a90a5'; ctx.beginPath(); ctx.arc(g.x + g.w / 2, area + kh - 12, 3, 0, 7); ctx.fill(); } }
+    for (let n = lo; n <= hi; n++) { if (!isBlack(n)) continue; const g = geo.x[n], c = keyColor(n); ctx.fillStyle = c || (held.has(n) ? '#4a5270' : '#1b2030'); roundRect(ctx, g.x, area + 1, g.w, kh * 0.62, 3); ctx.fill(); }
+  }
+  function roundRect(ctx, x, y, w, hh, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + hh, r); ctx.arcTo(x + w, y + hh, x, y + hh, r); ctx.arcTo(x, y + hh, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+  // smooth follow in wait mode
+  function tick() {
+    if (st.mode === 'wait') {
+      const target = cur() ? cur().ticks : st.view;
+      st.view += (target - st.view) * 0.18;
+    } else if (st.play) {
+      const t = (synth.ctx.currentTime - st.play.t0) * st.tempo / 100 + st.play.sec0;
+      st.view = song.m.header.secondsToTicks(t);
+      while (cur() && cur().ticks <= st.view) st.idx++;
+      updateStatus();
+      if (!cur() && st.view > (st.events[st.events.length - 1]?.ticks || 0) + song.ppq * 2) { if (st.loop && st.running) { startListen(); } else stop(); }
+    }
+    draw();
+    st.raf = requestAnimationFrame(tick);
+  }
+
+  const ctrl = {
+    onMidi(e) {
+      if (!e.on) { draw(); return; }
+      if (st.mode !== 'wait' || !st.running) { draw(); return; }
+      const ev = cur(); if (!ev) return;
+      if (e.note === 21) { st.mistakes++; st.evMistake = true; advance(); return; }
+      const need = new Set(ev.notes.map(n => n.midi));
+      if (need.has(e.note)) st.pressed.add(e.note);
+      else { st.mistakes++; st.evMistake = true; st.wrongFlash[e.note] = performance.now() + 350; }
+      if ([...need].every(n => st.pressed.has(n))) advance();
+      draw();
+    },
+    stop() { stop(); }
+  };
+  function advance() {
+    st.times.push(performance.now() - st.evStart);
+    if (!st.evMistake) st.cleanEvents++;
+    st.idx++; st.pressed = new Set(); st.evMistake = false; st.evStart = performance.now();
+    if (!cur()) finishPass();
+    updateStatus();
+  }
+  function finishPass() {
+    const total = st.events.length, acc = total ? st.cleanEvents / total : 0;
+    const status = acc >= 0.9 ? 'passed' : 'needs-practice';
+    const lessonMeta = { id: songId(name) };
+    const handKey = st.hands.length === 2 ? 'both' : st.hands[0] === 'R' ? 'right' : 'left';
+    saveResult(lessonMeta, { id: `${handKey}-${Math.min(st.from, st.to)}-${Math.max(st.from, st.to)}` },
+      { accuracy: Math.round(acc * 1000) / 1000, avgResponseMs: Math.round(st.times.reduce((a, b) => a + b, 0) / Math.max(1, st.times.length)), status, checkedBy: 'midi' });
+    toast(`Проход: ${Math.round(acc * 100)}% без ошибок${status === 'passed' ? ' — зачёт' : ''}`);
+    if (st.loop) { st.idx = 0; st.cleanEvents = 0; st.mistakes = 0; st.times = []; st.view = st.events[0].ticks - song.ppq; }
+    else stop();
+  }
+  function startListen() {
+    synth.ctx = synth.ctx || metro.ctx || new (window.AudioContext || window.webkitAudioContext)(); metro.ctx = synth.ctx; synth.ctx.resume();
+    st.idx = 0;
+    const first = st.events[0]; if (!first) return;
+    const sec0 = first.time, t0 = synth.ctx.currentTime + 0.4, rate = st.tempo / 100;
+    st.play = { t0, sec0 };
+    for (const ev of st.events) for (const n of ev.notes) {
+      const durSec = song.m.header.ticksToSeconds(n.ticks + n.dur) - n.time;
+      synth.play(n.midi, t0 + (n.time - sec0) / rate, durSec / rate);
+    }
+  }
+  function start() {
+    if (!st.events.length) return;
+    st.running = true; startBtn.textContent = 'Стоп';
+    const row = startBtn.parentElement; window.scrollTo({ top: row.getBoundingClientRect().top + window.scrollY - 76, behavior: 'smooth' });
+    activate(ctrl); keepAwake();
+    if (st.mode === 'listen') startListen(); else { st.evStart = performance.now(); }
+  }
+  function stop() {
+    st.running = false; startBtn.textContent = 'Старт';
+    if (st.play && synth.ctx) { synth.ctx.suspend().then(() => synth.ctx.resume()); st.play = null; }
+    if (active === ctrl) { active = null; midi.listener = null; }
+  }
+
+  layout(); reset();
+  if (window.__klavishi) window.__klavishi.player = st;
+  const onResize = () => { layout(); draw(); };
+  window.addEventListener('resize', onResize);
+  st.raf = requestAnimationFrame(tick);
+  activate(ctrl);
+  const cleanup = () => { cancelAnimationFrame(st.raf); window.removeEventListener('resize', onResize); stop(); window.removeEventListener('hashchange', cleanup); };
+  window.addEventListener('hashchange', cleanup);
+}
+
 function settingsPage() {
   const input = h('input', { id: 'url', value: bridge.url(), placeholder: 'https://script.google.com/macros/s/…/exec', autocomplete: 'off' });
   const q = store.get(K.queue, []).length;
@@ -597,13 +847,14 @@ function route() {
   activate(null);
   const [, sec, arg] = (location.hash || '#/theory').split('/');
   document.body.classList.remove('drawer-open');
-  const cur = sec === 'lesson' ? 'theory' : (sec || 'theory');
+  const cur = sec === 'lesson' ? 'theory' : sec === 'song' ? 'songs' : (sec || 'theory');
   document.querySelectorAll('[data-nav]').forEach(a => (a.dataset.nav === cur ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  $('#crumb').textContent = { theory: 'теория', lesson: 'урок', exercises: 'упражнения', songs: 'песни', settings: 'настройки' }[sec] || '';
+  $('#crumb').textContent = { theory: 'теория', lesson: 'урок', exercises: 'упражнения', songs: 'песни', song: 'песня', settings: 'настройки' }[sec] || '';
   if (!bridge.url() && sec !== 'settings') { location.hash = '#/settings'; toast('Сначала вставь адрес моста'); return; }
   if (sec === 'lesson' && arg) return lessonPage(decodeURIComponent(arg));
   if (sec === 'exercises') return exercisesPage();
   if (sec === 'songs') return songsPage();
+  if (sec === 'song' && arg) return songPage(decodeURIComponent(arg));
   if (sec === 'settings') return settingsPage();
   return theoryPage();
 }

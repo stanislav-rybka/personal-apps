@@ -6,6 +6,8 @@
  * GET  ?action=ping            -> {ok, ts}
  * GET  ?action=list            -> {ok, lessons:[{id,title,goal,schemaVersion,checked}], errors:[{file,error}]}
  * GET  ?action=image&name=<file>  -> {ok, mime, data(base64)}   (files in lessons/img, max 3 MB)
+ * GET  ?action=songs           -> {ok, songs:[{name,size,updated}]}   (Music/Piano/songs: .mid .midi .musicxml .xml)
+ * GET  ?action=song&name=<file>  -> {ok, name, data(base64)}
  * GET  ?action=progress        -> {ok, latest:{lessonId:{blockId:{status,savedAt}}}}
  * GET  ?action=lesson&id=<id>  -> {ok, lesson}
  * POST body (text/plain, JSON) -> {ok, saved:true, attemptId, duplicate}
@@ -17,6 +19,7 @@
 // Fixed locations. The script accepts no file IDs from the client.
 const LESSONS_FOLDER_ID = '1PjhnS70rxpQ0Ql5HJpn9HTeeSDv9fkwf'; // Music/Piano/lessons
 const IMAGES_FOLDER_ID  = '1_gZnO9uqeSAdBpEdEKtubo1WBe4B9NcN'; // Music/Piano/lessons/img
+const SONGS_FOLDER_ID   = '1-Z-K7tpGLHXOEut55Xol678RVgfXQS9S'; // Music/Piano/songs
 const RESULTS_SHEET_ID  = '1o-7dB_HxpW-Lr9fGynUfxmd_fEjZ49rOaEFCxH7q-gI'; // piano-results
 const RESULTS_TAB = 'results';
 const HEADERS = ['savedAt', 'attemptId', 'lessonId', 'blockId', 'accuracy', 'avgResponseMs',
@@ -36,6 +39,8 @@ function doGet(e) {
       case 'lesson': return json_({ ok: true, lesson: getLesson_(p.id) });
       case 'progress': return json_({ ok: true, latest: progress_() });
       case 'image': return json_(image_(p.name));
+      case 'songs': return json_(songs_());
+      case 'song': return json_(song_(p.name));
       default:       return json_({ ok: false, error: 'unknown action' });
     }
   } catch (err) {
@@ -124,6 +129,29 @@ function image_(name) {
   if (f.getSize() > 3 * 1024 * 1024) throw new Error('image too large: ' + name);
   const blob = f.getBlob();
   return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+}
+
+const SONG_RE = /^[^\/\\]{1,120}\.(mid|midi|musicxml|xml)$/i;
+function songs_() {
+  const it = DriveApp.getFolderById(SONGS_FOLDER_ID).getFiles();
+  const byName = {};
+  while (it.hasNext()) {
+    const f = it.next();
+    if (f.isTrashed() || !SONG_RE.test(f.getName())) continue;
+    const prev = byName[f.getName()];
+    if (!prev || f.getLastUpdated() > prev.getLastUpdated()) byName[f.getName()] = f;
+  }
+  const songs = Object.keys(byName).sort().map(function (n) { return { name: n, size: byName[n].getSize(), updated: byName[n].getLastUpdated().toISOString() }; });
+  return { ok: true, songs: songs };
+}
+function song_(name) {
+  if (!SONG_RE.test(String(name || ''))) throw new Error('bad song name');
+  const it = DriveApp.getFolderById(SONGS_FOLDER_ID).getFilesByName(name);
+  let f = null;
+  while (it.hasNext()) { const x = it.next(); if (!x.isTrashed() && (!f || x.getLastUpdated() > f.getLastUpdated())) f = x; }
+  if (!f) throw new Error('song not found: ' + name);
+  if (f.getSize() > 5 * 1024 * 1024) throw new Error('song file too large: ' + name);
+  return { ok: true, name: name, data: Utilities.base64Encode(f.getBlob().getBytes()) };
 }
 
 function getLesson_(id) {
