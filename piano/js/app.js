@@ -14,7 +14,7 @@ const h = (tag, attrs = {}, ...kids) => {
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(kid));
   return el;
 };
-const COLORS = { paper: '#ede7d9', muted: '#a3a9bc', left: '#39c2b0', right: '#f2a541', wrong: '#ef6f6c', ok: '#7bd389', line: '#3a4361' };
+const COLORS = { staffLine: '#9aa1b6', paper: '#ede7d9', muted: '#a3a9bc', left: '#39c2b0', right: '#f2a541', wrong: '#ef6f6c', ok: '#7bd389', line: '#3a4361' };
 const CHECKED = ['note-reading', 'chord', 'guided-practice'];
 
 /* ---------------- storage ---------------- */
@@ -52,7 +52,8 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
   const evs = events.map(e => (Array.isArray(e) ? e : [e]).map(parseNote));
   for (const g of evs) for (const n of g) if (n.oct == null) throw new Error(`нота «${n.text}» без октавы`);
   const all = evs.flat();
-  if (clef === 'auto') clef = all.every(n => n.midi >= 60) ? 'treble' : all.every(n => n.midi < 60) ? 'bass' : 'grand';
+  // treble reaches down to A3 and bass up to E4 on ledger lines, like printed music; only wider spans get two staves
+  if (clef === 'auto') clef = all.every(n => n.midi >= 57) ? 'treble' : all.every(n => n.midi <= 64) ? 'bass' : 'grand';
   const grand = clef === 'grand';
   const avail = Math.max(host.clientWidth || 640, 280);
   // compact: a short staff centred in the stage, so a lone note isn't lost at the left edge
@@ -66,12 +67,16 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
   ctx.scale(scale, scale);
   ctx.setFillStyle(COLORS.paper); ctx.setStrokeStyle(COLORS.paper);
   const style = { fillStyle: COLORS.paper, strokeStyle: COLORS.paper };
+  // staff lines thicker and a shade dimmer than the note heads, so the line under/through a head stays readable
+  const lineW = compact ? 1.7 : 1.35;
+  const staffStyle = { fillStyle: COLORS.staffLine, strokeStyle: COLORS.staffLine, lineWidth: lineW };
+  const ledgerStyle = { fillStyle: COLORS.staffLine, strokeStyle: COLORS.staffLine, lineWidth: lineW };
   const x = 8, sw = W - 16;
   const makeNote = (group, staffClef) => {
     if (!group.length) return new VF.GhostNote({ duration: 'w' });
     const g = group.slice().sort((a, b) => a.midi - b.midi);
     const note = new VF.StaveNote({ clef: staffClef, keys: g.map(n => `${n.letter.toLowerCase()}${n.acc}/${n.oct}`), duration: 'w' });
-    note.setStyle(style); note.setLedgerLineStyle(style);
+    note.setStyle(style); note.setLedgerLineStyle(ledgerStyle);
     g.forEach((n, i) => {
       if (n.acc) note.addModifier(new VF.Accidental(n.acc), i);
       const c = colors[n.midi];
@@ -88,7 +93,7 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
   const voice = notes => new VF.Voice({ num_beats: Math.max(notes.length, 1) * 4, beat_value: 4 }).setMode(VF.Voice.Mode.SOFT).addTickables(notes);
   if (!grand) {
     const stave = new VF.Stave(x, 20, sw).addClef(clef).setContext(ctx);
-    stave.setStyle(style); stave.draw();
+    stave.setStyle(staffStyle); stave.draw();
     let notes = evs.map(g => makeNote(g, clef));
     if (!notes.length) return;
     if (compact) notes = [new VF.GhostNote({ duration: 'w' }), ...notes, new VF.GhostNote({ duration: 'w' })];
@@ -98,7 +103,7 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
   } else {
     const top = new VF.Stave(x + 14, 10, sw - 14).addClef('treble').setContext(ctx);
     const bot = new VF.Stave(x + 14, 120, sw - 14).addClef('bass').setContext(ctx);
-    top.setStyle(style); bot.setStyle(style); top.draw(); bot.draw();
+    top.setStyle(staffStyle); bot.setStyle(staffStyle); top.draw(); bot.draw();
     const brace = new VF.StaveConnector(top, bot).setType(VF.StaveConnector.type.BRACE).setContext(ctx);
     brace.setStyle?.(style); brace.draw();
     new VF.StaveConnector(top, bot).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
@@ -339,7 +344,7 @@ const BLOCKS = {
     let st = null;
     const show = (colors = {}) => {
       if (b.mode === 'name-to-key') { view.innerHTML = ''; view.append(h('div', { class: 'big-name' }, st.target.text.replace(/-?\d$/, '') + (st.target.oct ?? ''))); }
-      else drawStaff(view, { clef: b.clef || 'auto', events: [st.target.text], colors, scale: 2.1, compact: true });
+      else drawStaff(view, { clef: b.clef || 'auto', events: [st.target.text], colors, scale: 1.9, compact: true });
       count.textContent = `${st.i + 1} из ${rounds}`;
     };
     const next = () => {
@@ -400,7 +405,7 @@ const BLOCKS = {
     const order = () => { let seq = []; for (let r = 0; r < rounds; r++) seq = seq.concat(b.order === 'shuffle' ? shuffle(steps) : steps); return seq; };
     const show = () => {
       const s = st.seq[st.i];
-      name.textContent = s.name; count.textContent = `${st.i + 1} из ${st.seq.length}`;
+      name.textContent = s.name; name.classList.toggle('long', s.name.length > 5); count.textContent = `${st.i + 1} из ${st.seq.length}`;
       if (voicing) drawStaff(view, { events: [s.notes.map(n => n.text)], scale: 1.8, compact: true }); else view.innerHTML = '';
       st.first = true; st.t0 = performance.now(); st.fixing = false;
     };

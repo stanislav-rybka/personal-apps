@@ -145,6 +145,8 @@ h2.section { font: 600 22px/1.25 var(--display); margin: 34px 0 14px; }
 .stage .kind { color: var(--muted); font-size: 16px; }
 .stage .count { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 16px; }
 .big-name { font: 700 clamp(64px, 16vw, 130px)/1 var(--display); text-align: center; margin: 18px 0 10px; letter-spacing: -.03em; }
+
+.big-name.long { font-size: clamp(30px, 6vw, 46px); line-height: 1.15; margin: 14px 0 6px; }
 .feedback { min-height: 1.6em; text-align: center; font-size: 19px; color: var(--muted); margin: 6px 0 12px; }
 .feedback.ok { color: var(--ok); }
 .feedback.bad { color: var(--wrong); }
