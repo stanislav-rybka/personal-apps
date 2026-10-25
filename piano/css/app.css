@@ -268,3 +268,8 @@ body.playing main { margin-left: 0; padding: 0; }
 body.playing .page.wide { max-width: none; }
 body.playing .play-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; position: fixed; z-index: 40; top: 0; left: 0; right: 0; padding: 8px 12px; background: rgba(22, 27, 41, .96); border-bottom: 1px solid var(--line); }
 body.playing .roll-wrap { position: fixed; z-index: 39; left: 0; right: 0; bottom: 0; border-radius: 0; border: 0; }
+
+.strip { background: #121726; border: 1px solid var(--line); border-radius: var(--r-lg); margin: 0 0 10px; min-height: 210px; overflow: hidden; }
+.strip svg { display: block; }
+.strip[hidden] { display: none; }
+body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0; border-radius: 0; border-width: 0 0 1px; }

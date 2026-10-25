@@ -6,7 +6,7 @@
  * GET  ?action=ping            -> {ok, ts}
  * GET  ?action=list            -> {ok, lessons:[{id,title,goal,schemaVersion,checked}], errors:[{file,error}]}
  * GET  ?action=image&name=<file>  -> {ok, mime, data(base64)}   (files in lessons/img, max 3 MB)
- * GET  ?action=songs           -> {ok, songs:[{name,size,updated}]}   (Music/Piano/songs: .mid .midi .musicxml .xml)
+ * GET  ?action=songs           -> {ok, songs:[{name,size,updated}]}   (Music/Piano/songs: .mid .midi .musicxml .xml .mxl)
  * GET  ?action=song&name=<file>  -> {ok, name, data(base64)}
  * GET  ?action=progress        -> {ok, latest:{lessonId:{blockId:{status,savedAt}}}}
  * GET  ?action=lesson&id=<id>  -> {ok, lesson}
@@ -131,7 +131,7 @@ function image_(name) {
   return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 
-const SONG_RE = /^[^\/\\]{1,120}\.(mid|midi|musicxml|xml)$/i;
+const SONG_RE = /^[^\/\\]{1,120}\.(mid|midi|musicxml|xml|mxl)$/i;
 function songs_() {
   const it = DriveApp.getFolderById(SONGS_FOLDER_ID).getFiles();
   const byName = {};

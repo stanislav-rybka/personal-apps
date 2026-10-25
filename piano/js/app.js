@@ -594,7 +594,7 @@ async function songsPage() {
     const st = done.includes('passed') ? 'going' : done.length ? 'going' : '';
     return h('li', {}, h('a', { class: 'lesson-row', href: '#/song/' + encodeURIComponent(s.name) },
       h('div', { class: 'motif', html: motif(s.name, { w: 96, h: 44, n: 4 }) }),
-      h('div', {}, h('div', { class: 't' }, songTitle(s.name)), h('div', { class: 'g' }, /\.mid/i.test(s.name) ? 'MIDI' : 'MusicXML — пока не поддерживается')),
+      h('div', {}, h('div', { class: 't' }, songTitle(s.name)), h('div', { class: 'g' }, /\.midi?$/i.test(s.name) ? 'MIDI' : 'MusicXML')),
       h('span', { class: 'state ' + st }, done.length ? `проходов: ${done.length}` : 'новая')));
   })));
   body.append(h('p', { class: 'feedback', style: 'text-align:left;margin-top:22px' }, 'Добавить песню: MIDI-файл в Google Drive → Music/Piano/songs. Разбор по аккордам переедет сюда следующим шагом.'));
@@ -625,8 +625,10 @@ function prepareMidi(m) {
   for (let k = 0; k * bar <= last + bar; k++) { barStarts.push(k * bar); barNums.push(k + 1); }
   const ks = m.header.keySignatures[0];
   const flats = !!ks && (/b/.test(ks.key) || (ks.scale === 'major' && ks.key === 'F') || (ks.scale === 'minor' && ['D', 'G', 'C', 'F'].includes(ks.key)));
-  for (const n of notes) n.label = (flats ? FLAT_NAMES : SHARP_NAMES)[n.midi % 12];
-  return finishSong({ notes, ppq, ts, barStarts, barNums, bpm: Math.round(m.header.tempos[0]?.bpm || 100),
+  for (const n of notes) { n.label = (flats ? FLAT_NAMES : SHARP_NAMES)[n.midi % 12]; n.oct = Math.floor(n.midi / 12) - 1; }
+  const REL = { A: 'C', E: 'G', B: 'D', 'F#': 'A', 'C#': 'E', 'G#': 'B', 'D#': 'F#', 'A#': 'C#', D: 'F', G: 'Bb', C: 'Eb', F: 'Ab', Bb: 'Db', Eb: 'Gb', Ab: 'Cb' };
+  const keySpec = !ks ? 'C' : ks.scale === 'minor' ? (REL[ks.key] || 'C') : ks.key;
+  return finishSong({ notes, ppq, ts, barStarts, barNums, keySpec, bpm: Math.round(m.header.tempos[0]?.bpm || 100),
     t2s: t => m.header.ticksToSeconds(t), s2t: x => m.header.secondsToTicks(x) });
 }
 
@@ -638,7 +640,7 @@ function prepareMusicXML(text) {
   if (!root) throw new Error('поддерживается только обычный MusicXML (partwise), не .mxl');
   const PPQ = 480, STEP = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
   const notes = [], tempos = [];
-  let ts = null, barStarts = null, barNums = null;
+  let ts = null, barStarts = null, barNums = null, fifths = null;
   const kid = (el, name) => { for (const c of el.children) if (c.tagName === name) return c; return null; };
   const kids = (el, name) => [...el.children].filter(c => c.tagName === name);
   const txt = (el, name) => kid(el, name)?.textContent?.trim();
@@ -656,6 +658,7 @@ function prepareMusicXML(text) {
           if (kid(el, 'divisions')) divisions = +txt(el, 'divisions');
           if (kid(el, 'staves')) staves = +txt(el, 'staves');
           const t = kid(el, 'time'); if (t && !ts) ts = [+txt(t, 'beats'), +txt(t, 'beat-type')];
+          const k = kid(el, 'key'); if (k && fifths == null && kid(k, 'fifths')) fifths = +txt(k, 'fifths');
         } else if (tag === 'sound' || tag === 'direction') {
           const snd = tag === 'sound' ? el : kid(el, 'sound');
           if (snd && snd.getAttribute('tempo')) tempos.push({ ticks: cursor, bpm: +snd.getAttribute('tempo') });
@@ -679,7 +682,9 @@ function prepareMusicXML(text) {
           }
           const hand = staves >= 2 ? (staff === 1 ? 'R' : 'L') : 'V';
           const alt = Math.round(+(txt(pitch, 'alter') || 0));
-          const n = { midi: midiN, ticks: start, dur, hand, label: txt(pitch, 'step') + (alt > 0 ? '#'.repeat(alt) : alt < 0 ? 'b'.repeat(-alt) : '') };
+          const fing = el.querySelector('notations technical fingering');
+          const n = { midi: midiN, ticks: start, dur, hand, oct: +txt(pitch, 'octave'), finger: fing ? +fing.textContent.trim() || null : null,
+            label: txt(pitch, 'step') + (alt > 0 ? '#'.repeat(alt) : alt < 0 ? 'b'.repeat(-alt) : '') };
           partNotes.push(n);
           if (ties.includes('start')) open[key] = n;
         }
@@ -695,7 +700,8 @@ function prepareMusicXML(text) {
   const t2s = t => { let s = 0; for (let i = 0; i < tempos.length; i++) { const a = tempos[i], b = tempos[i + 1]; const end = b ? Math.min(t, b.ticks) : t; if (end > a.ticks) s += (end - a.ticks) / PPQ * 60 / a.bpm; if (!b || t <= b.ticks) break; } return s; };
   const s2t = x => { let s = 0; for (let i = 0; i < tempos.length; i++) { const a = tempos[i], b = tempos[i + 1]; const seg = b ? (b.ticks - a.ticks) / PPQ * 60 / a.bpm : Infinity; if (x <= s + seg) return a.ticks + (x - s) * a.bpm / 60 * PPQ; s += seg; } return 0; };
   for (const n of notes) n.time = t2s(n.ticks);
-  return finishSong({ notes, ppq: PPQ, ts: ts || [4, 4], barStarts, barNums, bpm: Math.round(tempos[0].bpm), t2s, s2t });
+  const KEYS = { '-7': 'Cb', '-6': 'Gb', '-5': 'Db', '-4': 'Ab', '-3': 'Eb', '-2': 'Bb', '-1': 'F', 0: 'C', 1: 'G', 2: 'D', 3: 'A', 4: 'E', 5: 'B', 6: 'F#', 7: 'C#' };
+  return finishSong({ notes, ppq: PPQ, ts: ts || [4, 4], barStarts, barNums, keySpec: KEYS[fifths ?? 0] || 'C', bpm: Math.round(tempos[0].bpm), t2s, s2t });
 }
 function buildEvents(song, hands, from, to) {
   const tol = song.ppq / 16, ev = [];
@@ -730,6 +736,70 @@ const synth = {
   }
 };
 
+// .mxl = zipped MusicXML; Chrome can inflate natively, so no zip library is needed
+async function unzipMxl(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('файл .mxl повреждён');
+  const files = {}; let off = dv.getUint32(eocd + 16, true);
+  for (let k = 0, cnt = dv.getUint16(eocd + 10, true); k < cnt && dv.getUint32(off, true) === 0x02014b50; k++) {
+    const nlen = dv.getUint16(off + 28, true), name = new TextDecoder().decode(bytes.subarray(off + 46, off + 46 + nlen));
+    files[name] = { method: dv.getUint16(off + 10, true), csize: dv.getUint32(off + 20, true), lho: dv.getUint32(off + 42, true) };
+    off += 46 + nlen + dv.getUint16(off + 30, true) + dv.getUint16(off + 32, true);
+  }
+  const read = async name => {
+    const f = files[name]; if (!f) return null;
+    const start = f.lho + 30 + dv.getUint16(f.lho + 26, true) + dv.getUint16(f.lho + 28, true), data = bytes.subarray(start, start + f.csize);
+    if (f.method === 0) return new TextDecoder().decode(data);
+    const out = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer();
+    return new TextDecoder().decode(out);
+  };
+  const container = await read('META-INF/container.xml');
+  const rootPath = (container && /full-path="([^"]+)"/.exec(container)?.[1]) || Object.keys(files).find(n => /\.(xml|musicxml)$/i.test(n) && !n.startsWith('META-INF'));
+  if (!rootPath) throw new Error('в .mxl нет нот');
+  return read(rootPath);
+}
+
+// staff strip for the player: current + next bar, stemless heads (no rhythm yet), right hand / melody on top, left below
+function drawStrip(host, { evs, keySpec, scale = 1 }) {
+  host.innerHTML = '';
+  const VF = window.Vex && Vex.Flow; if (!VF || !evs.length) return;
+  const width = Math.max(host.clientWidth, 300), W = width / scale;
+  const renderer = new VF.Renderer(host, VF.Renderer.Backends.SVG);
+  renderer.resize(width, 220 * scale);
+  const ctx = renderer.getContext(); ctx.scale(scale, scale);
+  const line = { fillStyle: COLORS.staffLine, strokeStyle: COLORS.staffLine, lineWidth: 1.3 };
+  const top = new VF.Stave(22, 0, W - 30).addClef('treble').addKeySignature(keySpec).setContext(ctx);
+  const bot = new VF.Stave(22, 105, W - 30).addClef('bass').addKeySignature(keySpec).setContext(ctx);
+  ctx.setFillStyle(COLORS.paper); ctx.setStrokeStyle(COLORS.paper);
+  top.setStyle(line); bot.setStyle(line); top.draw(); bot.draw();
+  new VF.StaveConnector(top, bot).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();
+  new VF.StaveConnector(top, bot).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
+  const COL = { cur: COLORS.right, done: '#6f7690', next: COLORS.paper };
+  const mk = (notes, clef, state) => {
+    if (!notes.length) return new VF.GhostNote({ duration: 'q' });
+    const g = notes.slice().sort((a, b) => a.midi - b.midi);
+    const sn = new VF.StaveNote({ clef, keys: g.map(n => `${n.label[0].toLowerCase()}${n.label.slice(1).replace(/x/, '##')}/${n.oct}`), duration: 'q' });
+    const c = COL[state]; const sty = { fillStyle: c, strokeStyle: c };
+    sn.setStyle(sty); sn.setLedgerLineStyle({ ...line }); sn.setStemStyle({ strokeStyle: 'transparent', fillStyle: 'transparent' });
+    const f = g.map(n => n.finger).filter(Boolean);
+    if (f.length) { const a = new VF.Annotation(f.join(' ')); a.setFont('Golos Text', 11, 'bold'); a.setVerticalJustification(clef === 'treble' ? VF.Annotation.VerticalJustify.TOP : VF.Annotation.VerticalJustify.BOTTOM); sn.addModifier(a, 0); }
+    return sn;
+  };
+  const tn = [], bn = [];
+  for (const e of evs) {
+    if (e.barBreak) { tn.push(new VF.BarNote()); bn.push(new VF.BarNote()); }
+    tn.push(mk(e.notes.filter(n => n.hand !== 'L'), 'treble', e.state));
+    bn.push(mk(e.notes.filter(n => n.hand === 'L'), 'bass', e.state));
+  }
+  const voice = arr => new VF.Voice({ num_beats: 4, beat_value: 4 }).setMode(VF.Voice.Mode.SOFT).addTickables(arr);
+  const v1 = voice(tn), v2 = voice(bn);
+  try { VF.Accidental.applyAccidentals([v1, v2], keySpec); } catch { /* accidentals are a nicety */ }
+  new VF.Formatter().joinVoices([v1]).joinVoices([v2]).format([v1, v2], W - 130);
+  v1.draw(ctx, top); v2.draw(ctx, bot);
+}
+
 const ICON = {
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>',
@@ -750,13 +820,14 @@ async function songPage(name) {
   try {
     const d = await bridge.get({ action: 'song', name });
     const bytes = b64ToBytes(d.data);
-    song = /\.midi?$/i.test(name) ? prepareMidi(new Midi(bytes)) : prepareMusicXML(new TextDecoder('utf-8').decode(bytes));
+    song = /\.midi?$/i.test(name) ? prepareMidi(new Midi(bytes))
+      : prepareMusicXML(/\.mxl$/i.test(name) ? await unzipMxl(bytes) : new TextDecoder('utf-8').decode(bytes));
     if (!song.notes.length) throw new Error('в файле нет нот');
   } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   p.innerHTML = '';
   p.classList.add('wide');
   const st = { hands: song.hands.includes('V') ? ['R', 'L'] : ['R', 'L'], mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70,
-    playing: false, running: false, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, fx: [], mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null, loopA: null };
+    playing: false, running: false, letters: true, staff: true, stripKey: '', stripAt: 0, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, fx: [], mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null, loopA: null };
   const range = () => [Math.min(st.from, st.to), Math.max(st.from, st.to)];
   const icon = (k, label, extra = {}) => h('button', { class: 'ibtn', 'aria-label': label, title: label, html: ICON[k], ...extra });
 
@@ -781,7 +852,10 @@ async function songPage(name) {
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Кто играет'), handChips('chips')),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Режим'), h('div', { class: 'seg' }, modeBtn('wait', 'Ждать меня', 'seg-b'), modeBtn('listen', 'Послушать', 'seg-b'))),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Такты'), h('div', { class: 'row' }, fromIn, h('span', { class: 'dash' }, '—'), toIn, h('label', { class: 'ctl' }, loopCb, 'по кругу'))),
-      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Темп «Послушать»'), h('div', { class: 'row' }, tempoIn, tempoVal))),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Темп «Послушать»'), h('div', { class: 'row' }, tempoIn, tempoVal)),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Подсказки'), h('div', { class: 'row' },
+        h('label', { class: 'ctl' }, h('input', { type: 'checkbox', checked: true, onchange: e => { st.staff = e.target.checked; st.stripKey = ''; stripHost.hidden = !st.staff; layout(); } }), 'нотный стан'),
+        h('label', { class: 'ctl' }, h('input', { type: 'checkbox', checked: true, onchange: e => { st.letters = e.target.checked; } }), 'буквы на нотах')))),
     h('div', { class: 'row' }, h('button', { class: 'btn primary big', onclick: enterPlay, html: ICON.play + '<span>Играть</span>' }),
       h('p', { class: 'hint' }, 'В игре: тяни ноты пальцем, чтобы отмотать. Тап по номеру такта — играть оттуда, долгое нажатие на два такта — гонять кусок по кругу. На пианино: A0 — пропустить, B0 — такт назад.')));
 
@@ -798,7 +872,8 @@ async function songPage(name) {
     tempoChip, status);
   const canvas = h('canvas', { class: 'roll' });
   const rollWrap = h('div', { class: 'roll-wrap' }, canvas);
-  p.append(setup, playBar, rollWrap);
+  const stripHost = h('div', { class: 'strip' });
+  p.append(setup, playBar, stripHost, rollWrap);
 
   function syncUi() {
     document.querySelectorAll('.chip[data-hand]').forEach(b => { const on = st.hands.includes(b.dataset.hand); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
@@ -821,9 +896,12 @@ async function songPage(name) {
   const geo = {};
   function layout() {
     const playMode = document.body.classList.contains('playing');
-    rollWrap.style.top = playMode ? playBar.offsetHeight + 'px' : '';
+    const stripH = st.staff ? stripHost.offsetHeight : 0;
+    stripHost.style.top = playMode ? playBar.offsetHeight + 'px' : '';
+    rollWrap.style.top = playMode ? playBar.offsetHeight + stripH + 'px' : '';
+    st.stripKey = '';
     const dpr = window.devicePixelRatio || 1, w = rollWrap.clientWidth || canvas.clientWidth;
-    const hgt = playMode ? Math.max(300, window.innerHeight - playBar.offsetHeight) : Math.round(Math.max(300, Math.min(window.innerHeight * 0.45, 520)));
+    const hgt = playMode ? Math.max(260, window.innerHeight - playBar.offsetHeight - stripH) : Math.round(Math.max(300, Math.min(window.innerHeight * 0.45, 520)));
     canvas.width = w * dpr; canvas.height = hgt * dpr; canvas.style.height = hgt + 'px'; canvas.style.width = w + 'px';
     const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const ww = w / whites.length, kh = Math.min(130, Math.max(70, ww * 5.2));
@@ -898,7 +976,8 @@ async function songPage(name) {
         ctx.fillStyle = col; rr(ctx, g.x + 2, y0 - hh, g.w - 4, hh, 6); ctx.fill();
         ctx.shadowBlur = 0;
         ctx.fillStyle = 'rgba(255,255,255,0.22)'; rr(ctx, g.x + 3, y0 - hh + 1, g.w - 6, Math.min(4, hh / 3), 3); ctx.fill();
-        if (g.w >= 16 && hh >= 16) { ctx.fillStyle = 'rgba(15,19,32,0.85)'; ctx.font = `700 ${Math.min(13, g.w * 0.48)}px Golos Text, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(n.label || pcName(n.midi), g.x + g.w / 2, y0 - 4); ctx.textAlign = 'left'; }
+        if (n.finger && g.w >= 14 && hh >= 18) { ctx.fillStyle = 'rgba(15,19,32,0.75)'; ctx.beginPath(); ctx.arc(g.x + g.w / 2, y0 - hh + 10, Math.min(8, g.w / 2 - 2), 0, 7); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = `700 ${Math.min(11, g.w * 0.42)}px Golos Text, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(n.finger), g.x + g.w / 2, y0 - hh + 10.5); ctx.textAlign = 'left'; }
+        if (st.letters && g.w >= 16 && hh >= 16) { ctx.fillStyle = 'rgba(15,19,32,0.85)'; ctx.font = `700 ${Math.min(13, g.w * 0.48)}px Golos Text, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(n.label || pcName(n.midi), g.x + g.w / 2, y0 - 4); ctx.textAlign = 'left'; }
         ctx.globalAlpha = 1;
       }
     }
@@ -940,7 +1019,25 @@ async function songPage(name) {
       if (!cur() && last && st.view > last.ticks + song.ppq * 2) { if (st.loop) { st.idx = 0; startListen(); } else pause(); }
     }
     draw();
+    updateStrip();
     st.raf = requestAnimationFrame(tick);
+  }
+  function updateStrip() {
+    if (!st.staff || !st.events.length) return;
+    const pos = cur() ? cur().ticks : st.view, bi = barIndexAt(pos);
+    const key = `${bi}|${st.idx}|${st.hands.join('')}|${stripHost.clientWidth}`;
+    const now = performance.now();
+    if (key === st.stripKey || now - st.stripAt < 120) return;
+    st.stripKey = key; st.stripAt = now;
+    const t0 = song.barStarts[bi], t1 = song.barStarts[bi + 2] ?? Infinity;
+    const evs = []; let lastBar = null;
+    st.events.forEach((e, i) => {
+      if (e.ticks < t0 || e.ticks >= t1) return;
+      const b = barIndexAt(e.ticks);
+      evs.push({ notes: e.notes, barBreak: lastBar != null && b !== lastBar, state: i === st.idx ? 'cur' : i < st.idx && st.mode === 'wait' ? 'done' : 'next' });
+      lastBar = b;
+    });
+    try { drawStrip(stripHost, { evs, keySpec: song.keySpec || 'C', scale: stripHost.clientWidth < 700 ? 0.95 : 1.12 }); } catch (err) { stripHost.textContent = ''; }
   }
 
   /* ---- MIDI input ---- */
