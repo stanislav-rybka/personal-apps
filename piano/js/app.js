@@ -73,10 +73,12 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
   const ledgerStyle = { fillStyle: COLORS.staffLine, strokeStyle: COLORS.staffLine, lineWidth: lineW };
   const x = 8, sw = W - 16;
   const makeNote = (group, staffClef) => {
-    if (!group.length) return new VF.GhostNote({ duration: 'w' });
+    if (!group.length) return new VF.GhostNote({ duration: 'q' });
     const g = group.slice().sort((a, b) => a.midi - b.midi);
-    const note = new VF.StaveNote({ clef: staffClef, keys: g.map(n => `${n.letter.toLowerCase()}${n.acc}/${n.oct}`), duration: 'w' });
+    // filled heads without stems: the usual look of reading drills; rhythm isn't shown, so no stems or hollow heads
+    const note = new VF.StaveNote({ clef: staffClef, keys: g.map(n => `${n.letter.toLowerCase()}${n.acc}/${n.oct}`), duration: 'q', auto_stem: true });
     note.setStyle(style); note.setLedgerLineStyle(ledgerStyle);
+    note.setStemStyle({ strokeStyle: 'transparent', fillStyle: 'transparent' });
     g.forEach((n, i) => {
       if (n.acc) note.addModifier(new VF.Accidental(n.acc), i);
       const c = colors[n.midi];
@@ -96,7 +98,7 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
     stave.setStyle(staffStyle); stave.draw();
     let notes = evs.map(g => makeNote(g, clef));
     if (!notes.length) return;
-    if (compact) notes = [new VF.GhostNote({ duration: 'w' }), ...notes, new VF.GhostNote({ duration: 'w' })];
+    if (compact) notes = [new VF.GhostNote({ duration: 'q' }), ...notes, new VF.GhostNote({ duration: 'q' })];
     const v = voice(notes);
     new VF.Formatter().joinVoices([v]).format([v], Math.max(sw - 70, 40));
     v.draw(ctx, stave);
