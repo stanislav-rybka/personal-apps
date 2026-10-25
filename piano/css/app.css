@@ -273,3 +273,8 @@ body.playing .roll-wrap { position: fixed; z-index: 39; left: 0; right: 0; botto
 .strip svg { display: block; }
 .strip[hidden] { display: none; }
 body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0; border-radius: 0; border-width: 0 0 1px; }
+
+.strip.score { overflow-x: auto; overflow-y: hidden; min-height: 0; padding: 6px 0; scrollbar-width: none; }
+.strip.score::-webkit-scrollbar { display: none; }
+.strip.score .score-inner { width: max-content; }
+.strip.score svg { display: block; }

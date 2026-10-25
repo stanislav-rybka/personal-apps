@@ -736,6 +736,11 @@ const synth = {
   }
 };
 
+const scriptsLoaded = {};
+function loadScript(src) {
+  return (scriptsLoaded[src] ||= new Promise((ok, fail) => { const el = document.createElement('script'); el.src = src; el.onload = ok; el.onerror = () => fail(new Error('не загрузилось: ' + src)); document.head.append(el); }));
+}
+
 // .mxl = zipped MusicXML; Chrome can inflate natively, so no zip library is needed
 async function unzipMxl(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -820,8 +825,8 @@ async function songPage(name) {
   try {
     const d = await bridge.get({ action: 'song', name });
     const bytes = b64ToBytes(d.data);
-    song = /\.midi?$/i.test(name) ? prepareMidi(new Midi(bytes))
-      : prepareMusicXML(/\.mxl$/i.test(name) ? await unzipMxl(bytes) : new TextDecoder('utf-8').decode(bytes));
+    if (/\.midi?$/i.test(name)) song = prepareMidi(new Midi(bytes));
+    else { const xml = /\.mxl$/i.test(name) ? await unzipMxl(bytes) : new TextDecoder('utf-8').decode(bytes); song = prepareMusicXML(xml); song.xml = xml; }
     if (!song.notes.length) throw new Error('в файле нет нот');
   } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   p.innerHTML = '';
@@ -835,7 +840,7 @@ async function songPage(name) {
   const handChips = (cls) => h('div', { class: cls }, song.hands.map(hd => {
     const b = h('button', { class: 'chip hand-' + hd, 'aria-pressed': 'false', onclick: () => {
       const on = st.hands.includes(hd); if (on && st.hands.length === 1) return;
-      st.hands = on ? st.hands.filter(x => x !== hd) : [...st.hands, hd]; syncUi(); reset(true);
+      st.hands = on ? st.hands.filter(x => x !== hd) : [...st.hands, hd]; syncUi(); reset(true); if (score.osmd) renderScore();
     } }, cls === 'chips' ? HAND_NAME[hd] : HAND_LABEL[hd]);
     b.dataset.hand = hd; return b;
   }));
@@ -874,6 +879,44 @@ async function songPage(name) {
   const rollWrap = h('div', { class: 'roll-wrap' }, canvas);
   const stripHost = h('div', { class: 'strip' });
   p.append(setup, playBar, stripHost, rollWrap);
+  // MusicXML: real engraved score (OpenSheetMusicDisplay) instead of the heads-only strip
+  const score = { osmd: null, ts: -1, ready: false };
+  async function initScore() {
+    if (!song.xml) return;
+    try {
+      await loadScript('vendor/osmd-1.8.9.min.js');
+      stripHost.innerHTML = ''; stripHost.classList.add('score');
+      const host = h('div', { class: 'score-inner' }); stripHost.append(host);
+      score.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(host, {
+        autoResize: false, backend: 'svg', drawTitle: false, drawSubtitle: false, drawComposer: false, drawLyricist: false,
+        drawCredits: false, drawPartNames: false, drawMeasureNumbers: true, renderSingleHorizontalStaffline: true,
+        defaultColorMusic: COLORS.paper, cursorsOptions: [{ type: 0, color: COLORS.right, alpha: 0.35, follow: false }]
+      });
+      await score.osmd.load(song.xml);
+      renderScore();
+    } catch (e) { score.osmd = null; stripHost.classList.remove('score'); st.stripKey = ''; }
+  }
+  function renderScore() {
+    const o = score.osmd; if (!o) return;
+    const insts = o.Sheet.Instruments;
+    // the voice part shows only when the melody is selected; piano parts otherwise
+    insts.forEach(ins => { const isVoice = !/piano|keyboard|клав|фортеп/i.test(ins.Name || '') && insts.length > 1; ins.Visible = isVoice ? st.hands.includes('V') : st.hands.some(x => x !== 'V') || !insts.some(i2 => i2 !== ins); });
+    o.zoom = stripHost.clientWidth < 700 ? 0.7 : 0.8;
+    o.render(); o.cursor.show(); score.ts = -1; score.ready = true;
+    st.stripKey = ''; layout();
+  }
+  function moveScore() {
+    const o = score.osmd; if (!o || !score.ready) return;
+    const target = (cur() ? cur().ticks : st.view) / (song.ppq * 4), c = o.cursor;
+    if (Math.abs(target - score.ts) < 1e-6) return;
+    const now = () => c.Iterator.currentTimeStamp.RealValue;
+    if (target < now() - 1e-6 || score.ts < 0) c.reset();
+    let guard = 0;
+    while (!c.Iterator.EndReached && now() < target - 1e-6 && guard++ < 5000) c.next();
+    score.ts = target;
+    const el = c.cursorElement;
+    if (el) stripHost.scrollTo({ left: Math.max(0, el.offsetLeft - stripHost.clientWidth * 0.3), behavior: 'smooth' });
+  }
 
   function syncUi() {
     document.querySelectorAll('.chip[data-hand]').forEach(b => { const on = st.hands.includes(b.dataset.hand); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
@@ -1024,6 +1067,7 @@ async function songPage(name) {
   }
   function updateStrip() {
     if (!st.staff || !st.events.length) return;
+    if (score.osmd) { moveScore(); return; }
     const pos = cur() ? cur().ticks : st.view, bi = barIndexAt(pos);
     const key = `${bi}|${st.idx}|${st.hands.join('')}|${stripHost.clientWidth}`;
     const now = performance.now();
@@ -1132,8 +1176,8 @@ async function songPage(name) {
     syncUi(); reset(false); toast(`Круг: такты ${st.from}–${st.to}`);
   }
 
-  layout(); reset(); syncUi();
-  if (window.__klavishi) { window.__klavishi.player = st; window.__klavishi.song = song; window.__klavishi.synth = synth; }
+  layout(); reset(); syncUi(); initScore();
+  if (window.__klavishi) { window.__klavishi.player = st; window.__klavishi.song = song; window.__klavishi.synth = synth; window.__klavishi.score = score; }
   const onResize = () => { layout(); };
   window.addEventListener('resize', onResize);
   st.raf = requestAnimationFrame(tick);
