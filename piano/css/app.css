@@ -293,3 +293,29 @@ body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0
 .ex-player { margin: 10px 0 14px; }
 .ex-player .setup .setup-grid { margin-top: 0; }
 .practice .rate { margin-top: 10px; }
+
+/* songs by chords */
+.chart-edit { display: flex; flex-direction: column; gap: 12px; }
+.text-in { font: inherit; font-size: 17px; padding: 12px 14px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface); color: var(--paper); }
+.sheet-in { font: 15px/1.5 ui-monospace, Menlo, monospace; min-height: 46vh; padding: 14px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface); color: var(--paper); resize: vertical; }
+.ch-panel { position: sticky; top: 0; z-index: 20; background: var(--night); padding: 10px 0 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.ch-top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.ch-top .back { font-size: 26px; text-decoration: none; }
+.ch-now { font: 700 46px/1 var(--display); color: var(--right); }
+.ch-next { font: 600 22px/1 var(--display); color: var(--muted); }
+.ch-where { margin-left: auto; color: var(--muted); font-size: 14px; }
+.ch-hands { display: flex; gap: 20px; flex-wrap: wrap; font-size: 15px; }
+.ch-hands .dot { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; }
+.ch-hands .dot.l { background: var(--left); } .ch-hands .dot.r { background: var(--right); }
+.ch-kb svg { width: 100%; height: auto; max-height: 190px; display: block; }
+.ch-fb { min-height: 22px; text-align: left; margin: 0; }
+.ch-ctl { flex-wrap: wrap; gap: 8px; align-items: center; }
+.ch-set { margin: 12px 0; }
+.ch-set .setup-grid { margin: 10px 0; }
+.tr-v { min-width: 3ch; text-align: center; font-size: 18px; }
+.ch-sheet-wrap { overflow-x: auto; padding: 8px 0 40vh; }
+.ch-sheet { margin: 0; font: 16px/1.5 ui-monospace, Menlo, monospace; color: var(--paper); white-space: pre; }
+.ch-sheet .ln.chords { color: var(--right); font-weight: 700; }
+.ch-sheet .ln.label, .ch-sheet .lbl { color: var(--muted); font-weight: 600; }
+.ch-sheet .sc { font: inherit; color: inherit; background: none; border: 0; padding: 0 1px; border-radius: 4px; cursor: pointer; }
+.ch-sheet .sc.cur { background: var(--right); color: #24180a; }

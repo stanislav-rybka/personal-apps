@@ -22,7 +22,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: work without */ } }
 };
-const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', progress: 'pa.piano.progress', read: 'pa.piano.read', bpm: 'pa.piano.bpm', exTempo: 'pa.piano.exTempo' };
+const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', progress: 'pa.piano.progress', read: 'pa.piano.read', bpm: 'pa.piano.bpm', exTempo: 'pa.piano.exTempo', charts: 'pa.piano.charts' };
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -120,7 +120,7 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
 }
 
 /* ---------------- keyboard (SVG) ---------------- */
-function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = false } = {}) {
+function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = false, names = {}, fingers = {} } = {}) {
   const a = parseNote(from).midi, b = parseNote(to).midi;
   const isBlack = n => [1, 3, 6, 8, 10].includes(n % 12);
   const whites = []; for (let n = a; n <= b; n++) if (!isBlack(n)) whites.push(n);
@@ -130,7 +130,8 @@ function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = f
   for (const n of whites) {
     const c = highlight[n];
     svg += `<rect x="${pos[n] + 1}" y="1" width="${ww - 2}" height="${wh}" rx="5" fill="${c || '#ede7d9'}" />`;
-    if (labels && c) svg += `<text x="${pos[n] + ww / 2}" y="${wh - 12}" text-anchor="middle" font-family="Golos Text" font-size="15" font-weight="600" fill="#161b29">${pcName(n)}</text>`;
+    if (labels && c) svg += `<text x="${pos[n] + ww / 2}" y="${wh - 12}" text-anchor="middle" font-family="Golos Text" font-size="15" font-weight="600" fill="#161b29">${names[n] || pcName(n)}</text>`;
+    if (fingers[n]) svg += `<circle cx="${pos[n] + ww / 2}" cy="${wh - 44}" r="11" fill="#161b29"/><text x="${pos[n] + ww / 2}" y="${wh - 39}" text-anchor="middle" font-family="Golos Text" font-size="14" font-weight="700" fill="#fff">${fingers[n]}</text>`;
     if (n === 60) svg += `<circle cx="${pos[n] + ww / 2}" cy="${wh - (labels && c ? 34 : 14)}" r="3" fill="${c ? '#161b29' : '#a3a9bc'}"/>`;
   }
   for (let n = a; n <= b; n++) {
@@ -138,7 +139,8 @@ function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = f
     const left = pos[n - 1]; if (left == null) continue;
     const c = highlight[n];
     svg += `<rect x="${left + ww - bw / 2}" y="1" width="${bw}" height="${bh}" rx="4" fill="${c || '#1b2030'}" stroke="#0e121d" />`;
-    if (labels && c) svg += `<text x="${left + ww}" y="${bh - 10}" text-anchor="middle" font-family="Golos Text" font-size="12" font-weight="600" fill="#161b29">${pcName(n)}</text>`;
+    if (labels && c) svg += `<text x="${left + ww}" y="${bh - 10}" text-anchor="middle" font-family="Golos Text" font-size="12" font-weight="600" fill="#161b29">${names[n] || pcName(n)}</text>`;
+    if (fingers[n]) svg += `<circle cx="${left + ww}" cy="${bh - 36}" r="10" fill="#161b29"/><text x="${left + ww}" y="${bh - 31.5}" text-anchor="middle" font-family="Golos Text" font-size="13" font-weight="700" fill="#fff">${fingers[n]}</text>`;
   }
   host.innerHTML = svg + '</svg>';
 }
@@ -739,6 +741,285 @@ async function exercisePage(id) {
   const stopMetro = () => { if (metro.on) metro.stop(); window.removeEventListener('hashchange', stopMetro); };
   window.addEventListener('hashchange', stopMetro);
 }
+/* ---------------- songs by chords: a chord sheet pasted from any site ---------------- */
+// The pasted text (lyrics included) stays in this browser only; nothing is sent to Drive or the repo.
+const CH_RE = /^([A-H])([#b]?)(maj7|maj9|maj|M7|m7b5|mmaj7|m7|m6|m9|m11|madd9|min|m|dim7|dim|o7|o|aug|\+|sus2|sus4|sus|add9|add2|7sus4|7sus2|6\/9|69|6|7|9|11|13)?(\/([A-H])([#b]?))?$/;
+const CH_Q = { '': [0, 4, 7], maj: [0, 4, 7], m: [0, 3, 7], min: [0, 3, 7], 7: [0, 4, 7, 10], m7: [0, 3, 7, 10], maj7: [0, 4, 7, 11], M7: [0, 4, 7, 11],
+  maj9: [0, 4, 7, 11, 14], mmaj7: [0, 3, 7, 11], 6: [0, 4, 7, 9], m6: [0, 3, 7, 9], 9: [0, 4, 7, 10, 14], 11: [0, 4, 7, 10, 14, 17], 13: [0, 4, 7, 10, 14, 21],
+  m9: [0, 3, 7, 10, 14], m11: [0, 3, 7, 10, 14, 17], add9: [0, 4, 7, 14], add2: [0, 2, 4, 7], madd9: [0, 3, 7, 14], '6/9': [0, 4, 7, 9, 14], 69: [0, 4, 7, 9, 14],
+  dim: [0, 3, 6], o: [0, 3, 6], dim7: [0, 3, 6, 9], o7: [0, 3, 6, 9], m7b5: [0, 3, 6, 10], aug: [0, 4, 8], '+': [0, 4, 8],
+  sus2: [0, 2, 7], sus4: [0, 5, 7], sus: [0, 5, 7], '7sus4': [0, 5, 7, 10], '7sus2': [0, 2, 7, 10] };
+const CH_TRIAD = q => /^(m7b5|dim|o)/.test(q) ? [0, 3, 6] : /^(aug|\+)/.test(q) ? [0, 4, 8] : /sus2/.test(q) ? [0, 2, 7] : /sus/.test(q) ? [0, 5, 7] : /^m(?!aj)/.test(q) || q === 'min' ? [0, 3, 7] : [0, 4, 7];
+const LET = 'CDEFGAB', LPC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const STEP_OF = { 0: 0, 1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 4, 7: 4, 8: 4, 9: 5, 10: 6, 11: 6 };
+
+function chParse(sym) {
+  const m = CH_RE.exec(sym); if (!m) return null;
+  const L = m[1] === 'H' ? 'B' : m[1], acc = m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0;
+  const root = (LPC[L] + acc + 12) % 12, q = m[3] || '';
+  let bass = root, bassL = L;
+  if (m[4]) { bassL = m[5] === 'H' ? 'B' : m[5]; bass = (LPC[bassL] + (m[6] === '#' ? 1 : m[6] === 'b' ? -1 : 0) + 12) % 12; }
+  return { root, rootL: L, q, bass, bassL, flat: m[2] === 'b' || m[6] === 'b' };
+}
+// spell a pitch class on a given letter step above the root letter (so E7 shows G#, not Ab)
+function chName(pc, letterIdx) {
+  const L = LET[((letterIdx % 7) + 7) % 7], d = ((pc - LPC[L]) % 12 + 12) % 12;
+  return L + (d === 1 ? '#' : d === 2 ? '##' : d === 11 ? 'b' : d === 10 ? 'bb' : '');
+}
+const SH = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'], FL = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+function chTranspose(sym, n) {
+  const p = chParse(sym); if (!p || !n) return sym;
+  const m = CH_RE.exec(sym), names = p.flat ? FL : SH;
+  return names[(p.root + n + 120) % 12] + (m[3] || '') + (m[4] ? '/' + names[(p.bass + n + 120) % 12] : '');
+}
+function isChordToken(t) { return CH_RE.test(t.replace(/[()[\]]/g, '')); }
+function isFillerToken(t) { return /^([|\-–—x×*.:,]+|x?\d+x?|\(x?\d+\)|N\.?C\.?)$/i.test(t); }
+function chordLine(line) {
+  const toks = line.trim().split(/\s+/).filter(Boolean);
+  return toks.length > 0 && toks.some(isChordToken) && toks.every(t => isChordToken(t) || isFillerToken(t));
+}
+// parse a pasted sheet into display lines; chords keep their column so they sit over the right word
+function parseSheet(text) {
+  const lines = String(text || '').replace(/\r/g, '').replace(/\t/g, '    ').split('\n'), out = [], items = [];
+  for (const raw of lines) {
+    let label = '', body = raw;
+    const lm = /^(\s*[^\s:]{2,20}(?:\s[^\s:]{1,12})?\s*:)(.*)$/.exec(raw);
+    if (lm && chordLine(lm[2]) && !chordLine(lm[1].replace(':', ''))) { label = lm[1]; body = ' '.repeat(lm[1].length) + lm[2]; }
+    if (chordLine(body)) {
+      const parts = []; const re = /\S+/g; let m, last = 0;
+      while ((m = re.exec(body))) {
+        if (m.index > last) parts.push({ text: body.slice(last, m.index) });
+        const clean = m[0].replace(/[()[\]]/g, '');
+        if (isChordToken(m[0])) { parts.push({ chord: items.length, raw: m[0] }); items.push({ sym: clean, line: out.length }); }
+        else parts.push({ text: m[0] });
+        last = m.index + m[0].length;
+      }
+      out.push({ kind: 'chords', parts, label });
+    } else out.push({ kind: /^\s*[[(]?\s*(припев|куплет|бридж|вступление|проигрыш|кода|интро|аутро|chorus|verse|bridge|intro|outro|pre-?chorus)/i.test(raw) ? 'label' : 'text', text: raw });
+  }
+  return { lines: out, items };
+}
+
+// voicing: right hand three notes (root position or nearest to the previous chord), left hand bass (+ fifth)
+const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4 };
+function chordTones(p, sev) {
+  const iv = (sev === 'triad' ? CH_TRIAD(p.q) : (CH_Q[p.q] || CH_TRIAD(p.q))).map(x => x % 12);
+  const uniq = [...new Set(iv)];
+  if (uniq.length <= 3) return uniq.length === 3 ? uniq : [...uniq, 7].slice(0, 3);
+  // four or more tones: keep the third and the colour tone (7th/6th/9th), drop the fifth first, then the root (the bass has it)
+  const third = uniq.find(x => x === 3 || x === 4 || x === 2 || x === 5);
+  const colour = uniq.filter(x => ![0, 7, third].includes(x));
+  const pick = [third, ...colour].filter(x => x != null);
+  if (pick.length >= 3) return pick.slice(0, 3);
+  return [0, ...pick].slice(0, 3);
+}
+function voiceChord(sym, set, prev) {
+  const p = chParse(sym); if (!p) return null;
+  const iv = chordTones(p, set.sev);
+  const label = n => chName(n % 12, LET.indexOf(p.rootL) + STEP_OF[((n % 12) - p.root + 12) % 12]);
+  // candidate close-position voicings: every rotation of the three tones, lowest note between E3 and E4
+  const pcs = iv.map(x => (p.root + x) % 12), cands = [];
+  for (let r = 0; r < 3; r++) {
+    const order = pcs.slice(r).concat(pcs.slice(0, r));
+    for (let base = 52; base <= 64; base++) {
+      if (base % 12 !== order[0]) continue;
+      const v = [base]; for (const pc of order.slice(1)) { let n = v[v.length - 1] + 1; while (n % 12 !== pc) n++; v.push(n); }
+      if (v[2] - v[0] <= 12) cands.push({ v, r });
+    }
+  }
+  const lowestTone = iv.includes(0) ? 0 : iv[0], rootFirst = cands.filter(c => (c.v[0] - p.root - lowestTone + 120) % 12 === 0);
+  const centre = c => Math.abs(c.v[1] - 62);
+  let rh;
+  if (set.rh === 'near' && prev) {
+    const cost = c => c.v.reduce((a, n, i) => a + Math.abs(n - prev.rh[i]), 0);
+    rh = cands.slice().sort((a, b) => cost(a) - cost(b) || centre(a) - centre(b))[0].v;
+  } else rh = (rootFirst.length ? rootFirst : cands).slice().sort((a, b) => centre(a) - centre(b))[0].v;
+  let b = 40; while (b % 12 !== p.bass) b++;
+  const lh = [b];
+  if (set.lh === 'bass5') {
+    const fifthIv = /^(dim|o|m7b5)/.test(p.q) ? 6 : /^(aug|\+)/.test(p.q) ? 8 : 7;
+    lh.push(p.bass === p.root ? b + fifthIv : (() => { let n = b + 1; while (n % 12 !== p.root) n++; return n; })());
+  }
+  // fingers: right hand 1-3-5, or 1-2-5 when the upper interval is a fourth or wider; left hand 5 on the bass, 1 above
+  const fingers = { [rh[0]]: 1, [rh[1]]: rh[2] - rh[1] >= 5 ? 2 : 3, [rh[2]]: 5, [lh[0]]: 5 };
+  if (lh[1]) fingers[lh[1]] = 1;
+  const names = {};
+  for (const n of rh) names[n] = label(n);
+  names[lh[0]] = chName(p.bass, LET.indexOf(p.bassL)); if (lh[1]) names[lh[1]] = label(lh[1]);
+  return { sym, lh, rh, fingers, names };
+}
+function voiceAll(items, set) {
+  let prev = null;
+  return items.map(it => { const v = voiceChord(chTranspose(it.sym, set.tr), set, prev); if (v) prev = v; return v; });
+}
+
+const charts = {
+  all: () => store.get(K.charts, []),
+  get: id => charts.all().find(c => c.id === id) || null,
+  put(c) { const a = charts.all().filter(x => x.id !== c.id); a.unshift({ ...c, updated: new Date().toISOString() }); store.set(K.charts, a); },
+  del(id) { store.set(K.charts, charts.all().filter(c => c.id !== id)); }
+};
+
+function chartEditPage(id) {
+  const c = id ? charts.get(id) : null;
+  const p = page(h('div', { class: 'lesson-head' }, h('a', { class: 'back', href: c ? `#/chart/${c.id}` : '#/songs' }, c ? '‹ К песне' : '‹ Все песни'),
+    h('h1', {}, c ? 'Изменить шпаргалку' : 'Песня по аккордам'),
+    h('p', { class: 'goal' }, 'Скопируй с любого сайта текст с аккордами над строками и вставь сюда как есть. Текст остаётся только на этом планшете.')));
+  const title = h('input', { class: 'text-in', placeholder: 'Название', value: c ? c.title : '' });
+  const ta = h('textarea', { class: 'sheet-in', spellcheck: 'false', placeholder: 'Am           Dm\nстрока текста\nE7           Am\nстрока текста' });
+  ta.value = c ? c.text : '';
+  const info = h('p', { class: 'hint' });
+  const check = () => { const n = parseSheet(ta.value).items.length; info.textContent = n ? `Нашёл аккордов: ${n}` : 'Аккордов пока не вижу — нужна строка, где только аккорды.'; };
+  ta.addEventListener('input', () => { if (!title.value.trim()) { const first = ta.value.split('\n').map(s => s.trim()).find(s => s && !chordLine(s)); if (first) title.placeholder = first.slice(0, 60); } check(); });
+  const save = () => {
+    const parsed = parseSheet(ta.value);
+    if (!parsed.items.length) { toast('В тексте нет строк с аккордами'); return; }
+    const nid = c ? c.id : 'c' + Date.now().toString(36);
+    charts.put({ id: nid, title: title.value.trim() || title.placeholder.replace(/^Название$/, '') || 'Без названия', text: ta.value, set: c ? c.set : { ...CH_SET_DEFAULT }, pos: 0 });
+    location.hash = `#/chart/${nid}`;
+  };
+  p.append(h('div', { class: 'chart-edit' }, title, ta, info,
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: save }, 'Готово'),
+      c ? h('button', { class: 'btn quiet', onclick: () => { if (confirm('Удалить песню с планшета?')) { charts.del(c.id); location.hash = '#/songs'; } } }, 'Удалить') : null)));
+  check();
+}
+
+function chartPage(id) {
+  const c = charts.get(id);
+  if (!c) { page(h('div', { class: 'empty' }, h('strong', {}, 'Песни нет на этом планшете'), h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
+  const set = { ...CH_SET_DEFAULT, ...(c.set || {}) };
+  const parsed = parseSheet(c.text);
+  let voices = voiceAll(parsed.items, set), pos = Math.min(c.pos || 0, parsed.items.length - 1);
+  const p = page();
+  p.classList.add('chart-page');
+  const save = () => charts.put({ ...charts.get(id), set, pos });
+
+  /* sticky panel: chord now / next, hands, keyboard, controls */
+  const nowEl = h('span', { class: 'ch-now' }), nextEl = h('span', { class: 'ch-next' }), whereEl = h('span', { class: 'ch-where' });
+  const lhEl = h('b'), rhEl = h('b'), kb = h('div', { class: 'kb ch-kb' }), fb = h('div', { class: 'feedback ch-fb' });
+  const btn = (label, on, cls = 'btn') => h('button', { class: cls, onclick: on }, label);
+  const listenBtn = btn('Послушать', () => (listening ? stopListen() : startListen()));
+  let bpm = c.bpm || 72;
+  const bpmV = h('span', {}, String(bpm));
+  const panel = h('div', { class: 'ch-panel' },
+    h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), nowEl, nextEl, whereEl),
+    h('div', { class: 'ch-hands' }, h('span', {}, h('i', { class: 'dot l' }), 'Левая: ', lhEl), h('span', {}, h('i', { class: 'dot r' }), 'Правая: ', rhEl)),
+    kb, fb,
+    h('div', { class: 'row ch-ctl' }, btn('← Назад', () => go(pos - 1, true)), btn('Дальше →', () => go(pos + 1, true), 'btn primary'), listenBtn,
+      h('label', { class: 'ctl' }, 'Темп ', h('input', { type: 'range', min: 50, max: 140, step: 2, value: bpm, oninput: e => { bpm = +e.target.value; bpmV.textContent = bpm; } }), bpmV)));
+
+  /* settings */
+  const seg = (key, opts) => h('div', { class: 'seg' }, opts.map(([v, label]) => {
+    const b = h('button', { class: 'seg-b' + (set[key] === v ? ' on' : ''), onclick: () => { set[key] = v; applySettings(); } }, label); b.dataset.k = key; b.dataset.v = v; return b;
+  }));
+  const trVal = h('b', { class: 'tr-v' });
+  const settings = h('details', { class: 'toggle ch-set' }, h('summary', {}, 'Настройки разбора'),
+    h('div', { class: 'setup-grid' },
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Правая рука'), seg('rh', [['root', 'Основной вид'], ['near', 'Ближайшая форма']])),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Левая рука'), seg('lh', [['bass', 'Только бас'], ['bass5', 'Бас + квинта']])),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Септаккорды'), seg('sev', [['keep', 'Как в шпаргалке'], ['triad', 'Упростить']])),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Тональность'), h('div', { class: 'row' },
+        btn('−', () => { set.tr = Math.max(-11, set.tr - 1); applySettings(); }), trVal, btn('+', () => { set.tr = Math.min(11, set.tr + 1); applySettings(); }))),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, '«Послушать»: долей на аккорд'), seg('beats', [[2, '2'], [3, '3'], [4, '4']]))),
+    h('div', { class: 'row' }, h('a', { class: 'btn quiet', href: `#/chart/${id}/edit`, style: 'text-decoration:none' }, 'Изменить текст')));
+
+  /* the sheet: lyrics as pasted, chords as buttons over the words */
+  const sheet = h('pre', { class: 'ch-sheet' }), chipEls = [];
+  function drawSheet() {
+    sheet.innerHTML = ''; chipEls.length = 0;
+    parsed.lines.forEach(l => {
+      const row = h('span', { class: 'ln ' + l.kind });
+      if (l.kind === 'chords') {
+        let skip = 0;
+        if (l.label) { row.append(h('span', { class: 'lbl' }, l.label)); skip = l.label.length; }
+        for (const part of l.parts) {
+          if (part.text != null) { const t = skip ? part.text.slice(skip) : part.text; skip = Math.max(0, skip - part.text.length); row.append(t); continue; }
+          const shown = chTranspose(parsed.items[part.chord].sym, set.tr), i = part.chord;
+          const b = h('button', { class: 'sc', onclick: () => go(i, true) }, part.raw.replace(parsed.items[i].sym, shown));
+          chipEls[i] = b; row.append(b, ' '.repeat(Math.max(0, part.raw.length - part.raw.replace(parsed.items[i].sym, shown).length)));
+        }
+      } else row.textContent = l.text;
+      sheet.append(row, '\n');
+    });
+  }
+
+  function applySettings() {
+    voices = voiceAll(parsed.items, set);
+    settings.querySelectorAll('.seg-b').forEach(b => b.classList.toggle('on', String(set[b.dataset.k]) === String(b.dataset.v)));
+    trVal.textContent = (set.tr > 0 ? '+' : '') + set.tr;
+    drawSheet(); go(pos, false); save();
+  }
+  function go(i, sound) {
+    if (!parsed.items.length) return;
+    pos = Math.max(0, Math.min(parsed.items.length - 1, i));
+    const v = voices[pos], nx = voices[pos + 1];
+    nowEl.textContent = v ? v.sym : parsed.items[pos].sym + ' ?';
+    nextEl.textContent = nx ? 'дальше ' + nx.sym : pos + 1 >= parsed.items.length ? 'конец' : '';
+    whereEl.textContent = `${pos + 1} из ${parsed.items.length}`;
+    lhEl.textContent = v ? v.lh.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' + ') : '—';
+    rhEl.textContent = v ? v.rh.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' ') : 'аккорд не разобрал';
+    const hl = {}; if (v) { v.lh.forEach(n => (hl[n] = COLORS.left)); v.rh.forEach(n => (hl[n] = COLORS.right)); }
+    drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names: v ? v.names : {}, fingers: v ? v.fingers : {} });
+    chipEls.forEach((b, k) => b && b.classList.toggle('cur', k === pos));
+    const el = chipEls[pos];
+    if (el && sound !== 'listen') {
+      const r = el.getBoundingClientRect(), top = panel.getBoundingClientRect().bottom;
+      if (r.top < top + 8 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - top - 80, behavior: 'smooth' });
+    }
+    if (sound === true && v && !listening) playVoice(v, 1.2);
+    fb.className = 'feedback ch-fb'; fb.textContent = '';
+    save();
+  }
+  function playVoice(v, dur) { synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; v.lh.forEach(n => synth.play(n, t, dur, 0.3)); v.rh.forEach(n => synth.play(n, t, dur, 0.18)); }
+
+  /* play the chord → next one. Strict: exactly the keys shown, both hands together */
+  let timer = null;
+  const ctrl = {
+    onMidi(e) {
+      if (!e.on) return;
+      if (e.note === 21) { go(pos + 1, false); return; }
+      if (e.note === 23) { go(pos - 1, false); return; }
+      const v = voices[pos]; if (!v) return;
+      clearTimeout(timer);
+      if (midi.held.size >= v.lh.length + v.rh.length) timer = setTimeout(judge, 140);
+    },
+    stop() { clearTimeout(timer); stopListen(); }
+  };
+  function judge() {
+    const v = voices[pos]; if (!v) return;
+    const want = [...v.lh, ...v.rh].sort((a, b) => a - b), got = [...midi.held].sort((a, b) => a - b);
+    if (want.length === got.length && want.every((n, i) => n === got[i])) { fb.className = 'feedback ok ch-fb'; fb.textContent = 'Верно'; setTimeout(() => go(pos + 1, false), 180); }
+    else { fb.className = 'feedback bad ch-fb'; fb.textContent = `Сыграл ${got.map(midiName).join(' ')} — нужно ${want.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' ')}`; }
+  }
+
+  /* listen: each chord for N beats at the chosen tempo, from the current one */
+  let listening = false, lt = null;
+  function startListen() {
+    listening = true; listenBtn.textContent = 'Стоп'; synth.silence(); synth.newBus(); synth.ctx.resume();
+    const step = () => {
+      if (!listening) return;
+      const v = voices[pos], dur = 60 / bpm * set.beats;
+      if (v) { const t = synth.ctx.currentTime + 0.03; v.lh.forEach(n => synth.play(n, t, dur, 0.3)); v.rh.forEach(n => synth.play(n, t, dur * 0.9, 0.18)); }
+      lt = setTimeout(() => { if (pos + 1 >= parsed.items.length) return stopListen(); go(pos + 1, 'listen'); step(); }, dur * 1000);
+    };
+    step();
+  }
+  function stopListen() { listening = false; clearTimeout(lt); synth.silence(); listenBtn.textContent = 'Послушать'; }
+
+  p.append(panel, settings, h('div', { class: 'ch-sheet-wrap' }, sheet));
+  // the panel sticks right under the top bar
+  const pin = () => { panel.style.top = ($('.topbar')?.offsetHeight || 0) + 'px'; };
+  pin(); window.addEventListener('resize', pin);
+  if (!parsed.items.length) p.append(h('p', { class: 'note-bad' }, 'В тексте нет строк с аккордами.'));
+  midi.held.clear();
+  activate(ctrl);
+  applySettings();
+  keepAwake();
+  const cleanup = () => { stopListen(); clearTimeout(timer); window.removeEventListener('resize', pin); c.bpm = bpm; charts.put({ ...charts.get(id), set, pos, bpm }); window.removeEventListener('hashchange', cleanup); };
+  window.addEventListener('hashchange', cleanup);
+  if (window.__klavishi) Object.assign(window.__klavishi, { chart: { parsed, get voices() { return voices; }, get pos() { return pos; }, set } });
+}
+
 /* ---------------- songs: list + MIDI player ---------------- */
 const b64ToBytes = b64 => { const bin = atob(b64); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
 const songTitle = n => n.replace(/\.(mid|midi|musicxml|xml|mxl)$/i, '');
@@ -747,6 +1028,13 @@ const HAND_COLOR = { R: COLORS.right, L: COLORS.left, V: '#b9a6f2' };
 
 async function songsPage() {
   const p = page(hero('Песни', 'Мелодия и аккомпанемент по нотам: приложение ждёт, пока сыграешь нужные клавиши, и ведёт дальше.'));
+  const mine = charts.all();
+  p.append(h('div', { class: 'row', style: 'justify-content:space-between;align-items:center' }, h('h2', { class: 'section' }, 'По аккордам'), h('a', { class: 'btn primary', href: '#/chart/new', style: 'text-decoration:none' }, '+ Вставить шпаргалку')));
+  p.append(mine.length ? h('ul', { class: 'lesson-list' }, mine.map(cc => { const items = parseSheet(cc.text).items; return h('li', {}, h('a', { class: 'lesson-row', href: '#/chart/' + cc.id },
+    h('div', { class: 'motif', html: motif(cc.id, { w: 96, h: 44, n: 4 }) }),
+    h('div', {}, h('div', { class: 't' }, cc.title), h('div', { class: 'g' }, [...new Set(items.map(i => i.sym))].slice(0, 6).join(' · '))),
+    h('span', { class: 'state' }, `${items.length} акк.`))); })) : h('p', { class: 'hint' }, 'Скопируй с любого сайта текст с аккордами и вставь — приложение покажет, что нажимать обеими руками.'));
+  p.append(h('h2', { class: 'section' }, 'По нотам'));
   const body = h('div', {}, h('p', { class: 'feedback' }, 'Загружаю песни…')); p.append(body);
   let list;
   try { list = (await bridge.get({ action: 'songs' })).songs; }
@@ -762,7 +1050,7 @@ async function songsPage() {
       h('div', {}, h('div', { class: 't' }, songTitle(s.name)), h('div', { class: 'g' }, /\.midi?$/i.test(s.name) ? 'MIDI' : 'MusicXML')),
       h('span', { class: 'state ' + st }, done.length ? `проходов: ${done.length}` : 'новая')));
   })));
-  body.append(h('p', { class: 'feedback', style: 'text-align:left;margin-top:22px' }, 'Добавить песню: MIDI-файл в Google Drive → Music/Piano/songs. Разбор по аккордам переедет сюда следующим шагом.'));
+  body.append(h('p', { class: 'feedback', style: 'text-align:left;margin-top:22px' }, 'Добавить песню по нотам: MIDI или MusicXML в Google Drive → Music/Piano/songs.'));
 }
 
 function finishSong(base) {
@@ -1467,17 +1755,20 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 function route() {
   activate(null);
-  const [, sec, arg] = (location.hash || '#/theory').split('/');
+  const [, sec, arg, rest] = (location.hash || '#/theory').split('/');
   document.body.classList.remove('drawer-open');
-  const cur = sec === 'lesson' ? 'theory' : sec === 'song' ? 'songs' : sec === 'exercise' ? 'exercises' : (sec || 'theory');
+  const cur = sec === 'lesson' ? 'theory' : sec === 'song' ? 'songs' : sec === 'exercise' ? 'exercises' : sec === 'chart' ? 'songs' : (sec || 'theory');
   document.querySelectorAll('[data-nav]').forEach(a => (a.dataset.nav === cur ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  $('#crumb').textContent = { theory: 'теория', lesson: 'урок', exercises: 'упражнения', exercise: 'упражнение', songs: 'песни', song: 'песня', settings: 'настройки' }[sec] || '';
-  if (!bridge.url() && sec !== 'settings') { location.hash = '#/settings'; toast('Сначала вставь адрес моста'); return; }
+  $('#crumb').textContent = { theory: 'теория', lesson: 'урок', exercises: 'упражнения', exercise: 'упражнение', songs: 'песни', song: 'песня', chart: 'по аккордам', settings: 'настройки' }[sec] || '';
+  if (!bridge.url() && sec !== 'settings' && sec !== 'chart') { location.hash = '#/settings'; toast('Сначала вставь адрес моста'); return; }
   if (sec === 'lesson' && arg) return lessonPage(decodeURIComponent(arg));
   if (sec === 'exercises') return exercisesPage();
   if (sec === 'exercise' && arg) return exercisePage(decodeURIComponent(arg));
   if (sec === 'songs') return songsPage();
   if (sec === 'song' && arg) return songPage(decodeURIComponent(arg));
+  if (sec === 'chart' && arg === 'new') return chartEditPage(null);
+  if (sec === 'chart' && arg && rest === 'edit') return chartEditPage(decodeURIComponent(arg));
+  if (sec === 'chart' && arg) return chartPage(decodeURIComponent(arg));
   if (sec === 'settings') return settingsPage();
   return theoryPage();
 }
@@ -1499,7 +1790,7 @@ window.addEventListener('hashchange', route);
 metro.ui();
 initMidi(false);
 flush();
-route();
 // test hook for automated checks (no effect in normal use)
 window.__klavishi = { onMidi, midi, drawStaff, parseNote };
+route();
 })();
