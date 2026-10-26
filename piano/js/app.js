@@ -835,7 +835,8 @@ function voiceChord(sym, set, prev) {
     }
   }
   const lowestTone = iv.includes(0) ? 0 : iv[0], rootFirst = cands.filter(c => (c.v[0] - p.root - lowestTone + 120) % 12 === 0);
-  const centre = c => Math.abs(c.v[1] - 62);
+  // default octave: lowest right-hand note closest to A3 (around middle C, clear of the left hand)
+  const centre = c => Math.abs(c.v[0] - 57);
   let rh;
   if (set.rh === 'near' && prev) {
     const cost = c => c.v.reduce((a, n, i) => a + Math.abs(n - prev.rh[i]), 0);
@@ -849,8 +850,7 @@ function voiceChord(sym, set, prev) {
   names[lh[0]] = chName(p.bass, LET.indexOf(p.bassL)); if (lh[1]) names[lh[1]] = label(lh[1]);
   return { sym, lh, rh, fingers, names };
 }
-function voiceAll(items, set) {
-  let prev = null;
+function voiceAll(items, set, prev = null) {
   return items.map(it => { const v = voiceChord(chTranspose(it.sym, set.tr), set, prev); if (v) prev = v; return v; });
 }
 
@@ -1016,11 +1016,23 @@ function chartPage(id) {
     },
     stop() { clearTimeout(timer); stopListen(); }
   };
+  // Octave is free: the lowest key(s) must be the bass in order, the rest the right-hand notes in the same order bottom→top
+  // (that order is the inversion). In «ближайшая форма» the next chords follow where the hand actually is.
   function judge() {
     const v = voices[pos]; if (!v) return;
-    const want = [...new Set([...v.lh, ...v.rh])].sort((a, b) => a - b), got = [...midi.held].sort((a, b) => a - b);
-    if (want.length === got.length && want.every((n, i) => n === got[i])) { fb.className = 'feedback ok ch-fb'; fb.textContent = 'Верно'; setTimeout(() => go(pos + 1, false), 180); }
-    else { fb.className = 'feedback bad ch-fb'; fb.textContent = `Сыграл ${got.map(midiName).join(' ')} — нужно ${want.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' ')}`; }
+    const got = [...midi.held].sort((a, b) => a - b), nL = v.lh.length, nR = v.rh.length;
+    const pcs = a => a.map(n => n % 12).join(',');
+    const ok = got.length === nL + nR && pcs(got.slice(0, nL)) === pcs(v.lh) && pcs(got.slice(nL)) === pcs(v.rh) && got[nL - 1] < got[nL] && got[got.length - 1] - got[nL] <= 12;
+    if (ok) {
+      fb.className = 'feedback ok ch-fb'; fb.textContent = 'Верно';
+      const playedRh = got.slice(nL);
+      if (set.rh === 'near' && playedRh[0] !== v.rh[0]) voices = voices.slice(0, pos + 1).concat(voiceAll(parsed.items.slice(pos + 1), set, { rh: playedRh, lh: got.slice(0, nL) }));
+      setTimeout(() => go(pos + 1, false), 180);
+    } else {
+      const nm = n => v.names[n] || pcName(n);
+      fb.className = 'feedback bad ch-fb';
+      fb.textContent = `Сыграл ${got.map(midiName).join(' ')} — нужно: бас ${v.lh.map(nm).join(' + ')}, правая ${v.rh.map(nm).join(' ')} снизу вверх (октава любая)`;
+    }
   }
 
   /* listen: each chord for N beats at the chosen tempo, from the current one */
