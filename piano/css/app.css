@@ -319,3 +319,5 @@ body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0
 .ch-sheet .ln.label, .ch-sheet .lbl { color: var(--muted); font-weight: 600; }
 .ch-sheet .sc { font: inherit; color: inherit; background: none; border: 0; padding: 0 1px; border-radius: 4px; cursor: pointer; }
 .ch-sheet .sc.cur { background: var(--right); color: #24180a; }
+
+.catalog-tools { margin: 6px 0 18px; flex-wrap: wrap; }

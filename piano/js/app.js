@@ -855,11 +855,36 @@ function voiceAll(items, set) {
 }
 
 const charts = {
+  shared: null,
   all: () => store.get(K.charts, []),
   get: id => charts.all().find(c => c.id === id) || null,
   put(c) { const a = charts.all().filter(x => x.id !== c.id); a.unshift({ ...c, updated: new Date().toISOString() }); store.set(K.charts, a); },
   del(id) { store.set(K.charts, charts.all().filter(c => c.id !== id)); }
 };
+
+// the catalog lives in this browser; a backup file goes wherever Stas saves it (Downloads by default)
+function exportCharts() {
+  const data = JSON.stringify({ app: 'klavishi', kind: 'charts', version: 1, saved: new Date().toISOString(), charts: charts.all() }, null, 1);
+  const a = h('a', { href: URL.createObjectURL(new Blob([data], { type: 'application/json' })), download: `klavishi-akkordy-${new Date().toISOString().slice(0, 10)}.json` });
+  document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function importCharts(file, done) {
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const d = JSON.parse(r.result); if (d.kind !== 'charts' || !Array.isArray(d.charts)) throw new Error('это не копия каталога');
+      const have = charts.all(), ids = new Set(have.map(c => c.id)), add = d.charts.filter(c => c && c.id && c.text && !ids.has(c.id));
+      store.set(K.charts, have.concat(add)); toast(add.length ? `Добавил песен: ${add.length}` : 'Все песни из файла уже есть'); done?.();
+    } catch (e) { toast('Файл не подошёл: ' + e.message); }
+  };
+  r.readAsText(file);
+}
+function catalogTools(onChange) {
+  const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onchange: e => { if (e.target.files[0]) importCharts(e.target.files[0], onChange); e.target.value = ''; } });
+  return h('div', { class: 'row catalog-tools' }, file,
+    h('button', { class: 'btn quiet', onclick: exportCharts }, 'Сохранить копию каталога'),
+    h('button', { class: 'btn quiet', onclick: () => file.click() }, 'Восстановить из копии'));
+}
 
 function chartEditPage(id) {
   const c = id ? charts.get(id) : null;
@@ -869,8 +894,9 @@ function chartEditPage(id) {
   const title = h('input', { class: 'text-in', placeholder: 'Название', value: c ? c.title : '' });
   const ta = h('textarea', { class: 'sheet-in', spellcheck: 'false', placeholder: 'Am           Dm\nстрока текста\nE7           Am\nстрока текста' });
   ta.value = c ? c.text : '';
+  if (!c && charts.shared) { ta.value = charts.shared.text; if (charts.shared.title) title.value = charts.shared.title; charts.shared = null; }
   const info = h('p', { class: 'hint' });
-  const check = () => { const it = parseSheet(ta.value).items, u = [...new Set(it.map(i => i.sym))]; info.textContent = it.length ? `Аккорды: ${u.join(' · ')} — разных ${u.length}, по тексту ${it.length} смен` : 'Аккордов пока не вижу — нужна строка, где только аккорды.'; };
+  const check = () => { const it = parseSheet(ta.value).items, u = [...new Set(it.map(i => i.sym))]; info.textContent = it.length ? `Аккорды: ${u.join(' · ')} — разных ${u.length}, по тексту ${it.length} ${it.length % 10 === 1 && it.length % 100 !== 11 ? 'смена' : [2, 3, 4].includes(it.length % 10) && ![12, 13, 14].includes(it.length % 100) ? 'смены' : 'смен'}` : 'Аккордов пока не вижу — нужна строка, где только аккорды.'; };
   ta.addEventListener('input', () => { if (!title.value.trim()) { const first = ta.value.split('\n').map(s => s.trim()).find(s => s && !chordLine(s)); if (first) title.placeholder = first.slice(0, 60); } check(); });
   const save = () => {
     const parsed = parseSheet(ta.value);
@@ -1039,6 +1065,7 @@ async function songsPage() {
     h('div', { class: 'motif', html: motif(cc.id, { w: 96, h: 44, n: 4 }) }),
     h('div', {}, h('div', { class: 't' }, cc.title), h('div', { class: 'g' }, [...new Set(items.map(i => i.sym))].slice(0, 6).join(' · '))),
     h('span', { class: 'state' }, `${new Set(items.map(i => i.sym)).size} акк.`))); })) : h('p', { class: 'hint' }, 'Скопируй с любого сайта текст с аккордами и вставь — приложение покажет, что нажимать обеими руками.'));
+  p.append(catalogTools(() => songsPage()));
   p.append(h('h2', { class: 'section' }, 'По нотам'));
   const body = h('div', {}, h('p', { class: 'feedback' }, 'Загружаю песни…')); p.append(body);
   let list;
@@ -1795,6 +1822,16 @@ window.addEventListener('hashchange', route);
 metro.ui();
 initMidi(false);
 flush();
+// installed app: offline shell; storage the browser won't evict; "Share → Клавиши" opens the chord editor
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+navigator.storage?.persist?.().catch(() => {});
+{
+  const q = new URLSearchParams(location.search), text = q.get('text') || '', url = q.get('url') || '';
+  if (text || url) {
+    charts.shared = { text: [text, text.includes(url) ? '' : url].filter(Boolean).join('\n'), title: (q.get('title') || '').slice(0, 80) };
+    history.replaceState(null, '', location.pathname + '#/chart/new');
+  }
+}
 // test hook for automated checks (no effect in normal use)
 window.__klavishi = { onMidi, midi, drawStaff, parseNote };
 route();
