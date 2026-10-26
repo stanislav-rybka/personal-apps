@@ -576,7 +576,7 @@ function exercisesPage() {
 }
 /* ---------------- songs: list + MIDI player ---------------- */
 const b64ToBytes = b64 => { const bin = atob(b64); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
-const songTitle = n => n.replace(/\.(mid|midi|musicxml|xml)$/i, '');
+const songTitle = n => n.replace(/\.(mid|midi|musicxml|xml|mxl)$/i, '');
 const songId = n => 'song-' + (songTitle(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'x');
 const HAND_COLOR = { R: COLORS.right, L: COLORS.left, V: '#b9a6f2' };
 
@@ -624,10 +624,9 @@ function prepareMidi(m) {
   const barStarts = [], barNums = [];
   for (let k = 0; k * bar <= last + bar; k++) { barStarts.push(k * bar); barNums.push(k + 1); }
   const ks = m.header.keySignatures[0];
-  const flats = !!ks && (/b/.test(ks.key) || (ks.scale === 'major' && ks.key === 'F') || (ks.scale === 'minor' && ['D', 'G', 'C', 'F'].includes(ks.key)));
+  // @tonejs/midi names the key by its accidentals (A minor → 'C', scale 'minor'), so the name is already the staff key
+  const keySpec = ks ? ks.key : 'C', flats = /b/.test(keySpec) || keySpec === 'F';
   for (const n of notes) { n.label = (flats ? FLAT_NAMES : SHARP_NAMES)[n.midi % 12]; n.oct = Math.floor(n.midi / 12) - 1; }
-  const REL = { A: 'C', E: 'G', B: 'D', 'F#': 'A', 'C#': 'E', 'G#': 'B', 'D#': 'F#', 'A#': 'C#', D: 'F', G: 'Bb', C: 'Eb', F: 'Ab', Bb: 'Db', Eb: 'Gb', Ab: 'Cb' };
-  const keySpec = !ks ? 'C' : ks.scale === 'minor' ? (REL[ks.key] || 'C') : ks.key;
   return finishSong({ notes, ppq, ts, barStarts, barNums, keySpec, bpm: Math.round(m.header.tempos[0]?.bpm || 100),
     t2s: t => m.header.ticksToSeconds(t), s2t: x => m.header.secondsToTicks(x) });
 }
@@ -703,9 +702,47 @@ function prepareMusicXML(text) {
   const KEYS = { '-7': 'Cb', '-6': 'Gb', '-5': 'Db', '-4': 'Ab', '-3': 'Eb', '-2': 'Bb', '-1': 'F', 0: 'C', 1: 'G', 2: 'D', 3: 'A', 4: 'E', 5: 'B', 6: 'F#', 7: 'C#' };
   return finishSong({ notes, ppq: PPQ, ts: ts || [4, 4], barStarts, barNums, keySpec: KEYS[fifths ?? 0] || 'C', bpm: Math.round(tempos[0].bpm), t2s, s2t });
 }
-function buildEvents(song, hands, from, to) {
+// "Simple" arrangement from a dense file: right hand → its top line, left hand → one bass note per half bar
+// (whole bar in odd meters). Melody parts ('V') stay as they are. Own heuristic; nothing is copied from elsewhere.
+function simplifySong(song) {
+  const tol = song.ppq / 16, copy = (n, extra) => ({ ...n, ...extra });
+  const out = song.notes.filter(n => n.hand === 'V').map(n => copy(n));
+  // right hand: highest note of every onset, inner notes under a held melody note dropped, line made monophonic
+  const R = song.notes.filter(n => n.hand === 'R'), tops = [];
+  for (const n of R) { const t = tops[tops.length - 1]; if (t && n.ticks - t.ticks <= tol) { if (n.midi > t.midi) tops[tops.length - 1] = n; } else tops.push(n); }
+  const mel = [];
+  for (const n of tops) {
+    const p = mel[mel.length - 1];
+    if (p && n.ticks < p.ticks + p.dur - song.ppq / 4 && n.midi < p.midi - 2) continue;
+    mel.push(copy(n));
+  }
+  mel.forEach((n, i) => { const nx = mel[i + 1]; if (nx && n.ticks + n.dur > nx.ticks) n.dur = Math.max(tol, nx.ticks - n.ticks); });
+  // left hand: per window, the lowest note starting in its first beat, else the lowest starting anywhere in it
+  const L = song.notes.filter(n => n.hand === 'L'), full = song.ppq * 4 * song.ts[0] / song.ts[1], beat = song.ppq * 4 / song.ts[1];
+  const lastEnd = song.notes.reduce((a, n) => Math.max(a, n.ticks + n.dur), 0), bass = [];
+  song.barStarts.forEach((s, i) => {
+    const e = song.barStarts[i + 1] ?? Math.max(s + full, lastEnd);
+    const parts = song.ts[0] % 2 === 0 && Math.abs(e - s - full) < tol ? 2 : 1, w = (e - s) / parts;
+    for (let k = 0; k < parts; k++) {
+      const a = s + k * w, b = a + w, inWin = L.filter(n => n.ticks >= a - tol && n.ticks < b - tol);
+      if (!inWin.length) continue;
+      const early = inWin.filter(n => n.ticks < a + beat - tol), pool = early.length ? early : inWin;
+      const pick = pool.reduce((x, y) => (y.midi < x.midi || (y.midi === x.midi && y.ticks < x.ticks) ? y : x));
+      const prev = bass[bass.length - 1];
+      // same bass note again in the same bar: just keep holding it
+      if (prev && prev.midi === pick.midi && prev.bar === pick.bar && prev.end >= a - tol) { prev.end = b; continue; }
+      bass.push({ n: pick, bar: pick.bar, midi: pick.midi, end: Math.max(b, pick.ticks + pick.dur) });
+    }
+  });
+  bass.forEach((x, i) => { const nx = bass[i + 1]; const end = nx ? Math.min(x.end, nx.n.ticks) : x.end; out.push(copy(x.n, { dur: Math.max(tol, end - x.n.ticks), finger: null })); });
+  out.push(...mel);
+  out.sort((a, b) => a.ticks - b.ticks || a.midi - b.midi);
+  return out;
+}
+function buildEvents(song, hands, from, to, simple) {
   const tol = song.ppq / 16, ev = [];
-  for (const n of song.notes) {
+  const src = simple ? (song.simple ||= simplifySong(song)) : song.notes;
+  for (const n of src) {
     if (!hands.includes(n.hand) || n.bar < from || n.bar > to) continue;
     const last = ev[ev.length - 1];
     if (last && n.ticks - last.ticks <= tol) last.notes.push(n); else ev.push({ ticks: n.ticks, time: n.time, bar: n.bar, notes: [n] });
@@ -831,7 +868,7 @@ async function songPage(name) {
   } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   p.innerHTML = '';
   p.classList.add('wide');
-  const st = { hands: song.hands.includes('V') ? ['R', 'L'] : ['R', 'L'], mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70,
+  const st = { hands: ['R', 'L'], simple: false, mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70,
     playing: false, running: false, letters: true, staff: true, stripKey: '', stripAt: 0, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, fx: [], mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null, loopA: null };
   const range = () => [Math.min(st.from, st.to), Math.max(st.from, st.to)];
   const icon = (k, label, extra = {}) => h('button', { class: 'ibtn', 'aria-label': label, title: label, html: ICON[k], ...extra });
@@ -840,12 +877,17 @@ async function songPage(name) {
   const handChips = (cls) => h('div', { class: cls }, song.hands.map(hd => {
     const b = h('button', { class: 'chip hand-' + hd, 'aria-pressed': 'false', onclick: () => {
       const on = st.hands.includes(hd); if (on && st.hands.length === 1) return;
-      st.hands = on ? st.hands.filter(x => x !== hd) : [...st.hands, hd]; syncUi(); reset(true); if (score.osmd) renderScore();
+      st.hands = on ? st.hands.filter(x => x !== hd) : [...st.hands, hd]; syncUi(); reset(true); if (score.osmd && !st.simple) renderScore();
     } }, cls === 'chips' ? HAND_NAME[hd] : HAND_LABEL[hd]);
     b.dataset.hand = hd; return b;
   }));
   const modeBtn = (m, label, cls) => h('button', { class: cls, 'data-mode': m, onclick: () => { const was = st.playing; pause(); st.mode = m; syncUi(); if (was) resume(); }, html: ICON[m] + `<span>${label}</span>` });
   const num = (val, on) => h('input', { type: 'number', inputmode: 'numeric', min: song.firstBar, max: song.bars, value: val, class: 'num', onchange: e => { on(Math.max(song.firstBar, Math.min(song.bars, +e.target.value || song.firstBar))); syncUi(); reset(true); } });
+  // arrangement: original file or the simplified one (top line + bass); the engraved score shows only the original
+  const setSimple = v => { if (st.simple === v) return; st.simple = v; stripMode(); reset(true); syncUi(); if (!v && score.osmd) renderScore(); else layout(); };
+  const arrBtn = (v, label) => h('button', { class: 'seg-b', 'data-arr': v ? 's' : 'o', onclick: () => setSimple(v) }, label);
+  const arrInfo = h('span', { class: 'hint' });
+  const simpleChip = h('button', { class: 'chip simple', onclick: () => setSimple(!st.simple) }, 'Упрощ.');
   const fromIn = num(st.from, v => (st.from = v)), toIn = num(st.to, v => (st.to = v));
   const loopCb = h('input', { type: 'checkbox', checked: true, onchange: e => { st.loop = e.target.checked; syncUi(); } });
   const tempoVal = h('span', { class: 'tempo-val' });
@@ -855,6 +897,7 @@ async function songPage(name) {
       h('p', { class: 'goal' }, `${song.bars} тактов, размер ${song.ts[0]}/${song.ts[1]}, в оригинале ${song.bpm} BPM`)),
     h('div', { class: 'setup-grid' },
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Кто играет'), handChips('chips')),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Аранжировка'), h('div', { class: 'row' }, h('div', { class: 'seg' }, arrBtn(false, 'Как в файле'), arrBtn(true, 'Упрощённо')), arrInfo)),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Режим'), h('div', { class: 'seg' }, modeBtn('wait', 'Ждать меня', 'seg-b'), modeBtn('listen', 'Послушать', 'seg-b'))),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Такты'), h('div', { class: 'row' }, fromIn, h('span', { class: 'dash' }, '—'), toIn, h('label', { class: 'ctl' }, loopCb, 'по кругу'))),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Темп «Послушать»'), h('div', { class: 'row' }, tempoIn, tempoVal)),
@@ -872,12 +915,13 @@ async function songPage(name) {
   const playBar = h('div', { class: 'play-bar' },
     icon('close', 'Выйти из игры', { onclick: exitPlay }),
     h('div', { class: 'pb-group' }, icon('prev', 'Такт назад', { onclick: () => stepBar(-1) }), playBtn, icon('next', 'Такт вперёд', { onclick: () => stepBar(1) })),
-    loopBtn, handChips('pb-hands'),
+    loopBtn, handChips('pb-hands'), simpleChip,
     h('div', { class: 'seg small' }, modeBtn('wait', 'Ждать', 'seg-b'), modeBtn('listen', 'Слушать', 'seg-b')),
     tempoChip, status);
   const canvas = h('canvas', { class: 'roll' });
   const rollWrap = h('div', { class: 'roll-wrap' }, canvas);
-  const stripHost = h('div', { class: 'strip' });
+  const stripHost = h('div', { class: 'strip' }), plainHost = h('div', { class: 'strip-plain' }), scoreHost = h('div', { class: 'score-inner', hidden: true });
+  stripHost.append(plainHost, scoreHost);
   p.append(setup, playBar, stripHost, rollWrap);
   // MusicXML: real engraved score (OpenSheetMusicDisplay) instead of the heads-only strip
   const score = { osmd: null, ts: -1, ready: false };
@@ -885,19 +929,21 @@ async function songPage(name) {
     if (!song.xml) return;
     try {
       await loadScript('vendor/osmd-1.8.9.min.js');
-      stripHost.innerHTML = ''; stripHost.classList.add('score');
-      const host = h('div', { class: 'score-inner' }); stripHost.append(host);
-      score.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(host, {
+      score.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(scoreHost, {
         autoResize: false, backend: 'svg', drawTitle: false, drawSubtitle: false, drawComposer: false, drawLyricist: false,
         drawCredits: false, drawPartNames: false, drawMeasureNumbers: true, renderSingleHorizontalStaffline: true,
         defaultColorMusic: COLORS.paper, cursorsOptions: [{ type: 0, color: COLORS.right, alpha: 0.35, follow: false }]
       });
       await score.osmd.load(song.xml);
-      renderScore();
-    } catch (e) { score.osmd = null; stripHost.classList.remove('score'); st.stripKey = ''; }
+      stripMode(); renderScore();
+    } catch (e) { score.osmd = null; stripMode(); st.stripKey = ''; }
+  }
+  function stripMode() {
+    const engraved = !!score.osmd && !st.simple;
+    stripHost.classList.toggle('score', engraved); scoreHost.hidden = !engraved; plainHost.hidden = engraved; st.stripKey = '';
   }
   function renderScore() {
-    const o = score.osmd; if (!o) return;
+    const o = score.osmd; if (!o || st.simple) return;
     const insts = o.Sheet.Instruments;
     // the voice part shows only when the melody is selected; piano parts otherwise
     insts.forEach(ins => { const isVoice = !/piano|keyboard|клав|фортеп/i.test(ins.Name || '') && insts.length > 1; ins.Visible = isVoice ? st.hands.includes('V') : st.hands.some(x => x !== 'V') || !insts.some(i2 => i2 !== ins); });
@@ -920,6 +966,9 @@ async function songPage(name) {
 
   function syncUi() {
     document.querySelectorAll('.chip[data-hand]').forEach(b => { const on = st.hands.includes(b.dataset.hand); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+    p.querySelectorAll('[data-arr]').forEach(b => b.classList.toggle('on', (b.dataset.arr === 's') === st.simple));
+    simpleChip.classList.toggle('on', st.simple);
+    if (st.simple) { const all = song.notes.filter(n => n.hand !== 'V').length, s = (song.simple || []).filter(n => n.hand !== 'V').length; arrInfo.textContent = `нот: ${s} вместо ${all}`; } else arrInfo.textContent = '';
     p.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === st.mode));
     const [a, b] = range();
     fromIn.value = st.from; toIn.value = st.to; loopCb.checked = st.loop;
@@ -958,7 +1007,7 @@ async function songPage(name) {
   const barIndexAt = t => { let i = 0; while (i + 1 < song.barStarts.length && song.barStarts[i + 1] <= t) i++; return i; };
   function reset(keepPos) {
     const pos = keepPos && cur() ? cur().ticks : null;
-    st.events = buildEvents(song, st.hands, ...range());
+    st.events = buildEvents(song, st.hands, ...range(), st.simple);
     st.idx = 0; st.pressed = new Set(); st.mistakes = 0; st.cleanEvents = 0; st.times = []; st.evMistake = false;
     if (pos != null) { const i = st.events.findIndex(e => e.ticks >= pos - 1); st.idx = i < 0 ? 0 : i; }
     st.view = cur() ? cur().ticks - song.ppq : 0; st.evStart = performance.now();
@@ -1076,9 +1125,9 @@ async function songPage(name) {
   }
   function updateStrip() {
     if (!st.staff || !st.events.length) return;
-    if (score.osmd) { moveScore(); return; }
+    if (score.osmd && !st.simple) { moveScore(); return; }
     const pos = cur() ? cur().ticks : st.view, bi = barIndexAt(pos);
-    const key = `${bi}|${st.idx}|${st.hands.join('')}|${stripHost.clientWidth}`;
+    const key = `${bi}|${st.idx}|${st.hands.join('')}|${st.simple}|${stripHost.clientWidth}`;
     const now = performance.now();
     if (key === st.stripKey || now - st.stripAt < 120) return;
     st.stripKey = key; st.stripAt = now;
@@ -1090,7 +1139,7 @@ async function songPage(name) {
       evs.push({ notes: e.notes, barBreak: lastBar != null && b !== lastBar, state: i === st.idx ? 'cur' : i < st.idx && st.mode === 'wait' ? 'done' : 'next' });
       lastBar = b;
     });
-    try { drawStrip(stripHost, { evs, keySpec: song.keySpec || 'C', scale: stripHost.clientWidth < 700 ? 0.95 : 1.12 }); } catch (err) { stripHost.textContent = ''; }
+    try { drawStrip(plainHost, { evs, keySpec: song.keySpec || 'C', scale: stripHost.clientWidth < 700 ? 0.95 : 1.12 }); } catch (err) { plainHost.textContent = ''; }
   }
 
   /* ---- MIDI input ---- */
@@ -1118,7 +1167,7 @@ async function songPage(name) {
   function finishPass() {
     const total = st.events.length, acc = total ? st.cleanEvents / total : 0, [a, b] = range();
     const status = acc >= 0.9 ? 'passed' : 'needs-practice';
-    saveResult({ id: songId(name) }, { id: `${st.hands.slice().sort().join('').toLowerCase()}-${a}-${b}` },
+    saveResult({ id: songId(name) }, { id: `${st.hands.slice().sort().join('').toLowerCase()}${st.simple ? '-s' : ''}-${a}-${b}` },
       { accuracy: Math.round(acc * 1000) / 1000, avgResponseMs: Math.round(st.times.reduce((x, y) => x + y, 0) / Math.max(1, st.times.length)), status, checkedBy: 'midi' });
     toast(`Проход: ${Math.round(acc * 100)}% без ошибок${status === 'passed' ? ' — зачёт' : ''}`);
     st.cleanEvents = 0; st.mistakes = 0; st.times = [];

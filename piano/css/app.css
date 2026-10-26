@@ -235,6 +235,7 @@ h2.section { font: 600 22px/1.25 var(--display); margin: 34px 0 14px; }
 .chip.hand-L.on { border-color: var(--left); color: var(--left); }
 .chip.hand-V.on { border-color: #b9a6f2; color: #b9a6f2; }
 .chip.loop.on { border-color: var(--right); color: var(--right); }
+.chip.simple.on { border-color: var(--paper); color: var(--paper); }
 .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 3px; }
 .seg-b { display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 8px 14px; border-radius: 10px; cursor: pointer; min-height: 42px; color: var(--muted); }
 .seg-b svg { width: 20px; height: 20px; }
@@ -271,7 +272,7 @@ body.playing .roll-wrap { position: fixed; z-index: 39; left: 0; right: 0; botto
 
 .strip { background: #121726; border: 1px solid var(--line); border-radius: var(--r-lg); margin: 0 0 10px; min-height: 210px; overflow: hidden; }
 .strip svg { display: block; }
-.strip[hidden] { display: none; }
+.strip[hidden], .strip > [hidden] { display: none; }
 body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0; border-radius: 0; border-width: 0 0 1px; }
 
 .strip.score { overflow-x: auto; overflow-y: hidden; min-height: 0; padding: 6px 0; scrollbar-width: none; }
