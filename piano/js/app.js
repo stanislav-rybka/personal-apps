@@ -22,7 +22,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: work without */ } }
 };
-const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', progress: 'pa.piano.progress', read: 'pa.piano.read', bpm: 'pa.piano.bpm' };
+const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', progress: 'pa.piano.progress', read: 'pa.piano.read', bpm: 'pa.piano.bpm', exTempo: 'pa.piano.exTempo' };
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -570,9 +570,174 @@ async function lessonPage(id) {
   keepAwake();
 }
 
-function exercisesPage() {
-  page(hero('Упражнения', 'Библиотека упражнений по темам и то, что сейчас в фокусе.'),
-    h('div', { class: 'empty' }, h('strong', {}, 'Скоро здесь'), 'Арпеджио, синхронность рук, аккорды и смены, интервалы, гаммы и знаки. Каждое упражнение — зачем оно, как делать правильно, варианты и ступени темпа. Метроном уже есть сверху справа.'));
+/* ---------------- exercises (format: piano-content-spec, "Exercise file") ---------------- */
+const CATEGORY = { arpeggios: 'Арпеджио', coordination: 'Синхронность рук', chords: 'Аккорды и смены', intervals: 'Интервалы', scales: 'Гаммы и знаки' };
+const exResultId = id => 'ex-' + id;
+let exCatalog = null;
+async function loadExercises(force) {
+  if (exCatalog && !force) return exCatalog;
+  const [list, prog] = await Promise.all([bridge.get({ action: 'exercises' }), bridge.get({ action: 'progress' }).catch(() => null)]);
+  if (prog && prog.latest) {
+    store.set(K.progress, mergeProgress(store.get(K.progress, {}), prog.latest));
+    const clean = store.get(K.exTempo, {});
+    for (const [lid, blocks] of Object.entries(prog.latest)) if (lid.startsWith('ex-') && blocks.practice?.cleanTempo && clean[lid] == null) clean[lid] = blocks.practice.cleanTempo;
+    store.set(K.exTempo, clean);
+  }
+  exCatalog = list;
+  return list;
+}
+const exStatus = id => (store.get(K.progress, {})[exResultId(id)] || {}).practice || null;
+const exClean = id => store.get(K.exTempo, {})[exResultId(id)] || null;
+function focusFor(id) { return (exCatalog?.focus?.items || []).find(f => f.exercise === id) || null; }
+// tempo the engine offers: Palych's recommendation if he gave one, else one step above the last clean tempo, capped at target
+function offeredTempo(x) {
+  const t = x.tempo; if (!t) return null;
+  const f = focusFor(x.id); if (f && f.tempo) return { bpm: f.tempo, why: f.why ? `Палыч советует ${f.tempo}: ${f.why}` : `Палыч советует ${f.tempo}` };
+  const c = exClean(x.id);
+  if (c == null) return { bpm: t.start, why: 'первый раз — со стартового темпа' };
+  return { bpm: Math.min(t.target, c + t.step), why: c >= t.target ? `цель ${t.target} уже взята — держи её` : `в прошлый раз чисто на ${c}` };
+}
+
+// pattern → a tiny "song" the player can run: one step = 1/stepsPerBeat of a beat, bars of `beats` beats
+function patternToSong(x, bpm) {
+  const pat = x.pattern, PPQ = 480, beats = x.tempo?.beats || 4, spb = x.tempo?.stepsPerBeat || 1, stepT = PPQ / spb;
+  const reps = Math.max(1, Math.min(20, pat.repetitions || 1)), notes = [];
+  const tok = (raw, hand, ticks) => {
+    const [n, f] = String(raw).trim().split('/'), pn = parseNote(n);
+    if (pn.midi == null) throw new Error(`нота «${raw}»: нужна октава`);
+    if (f != null && !/^[1-5]$/.test(f)) throw new Error(`нота «${raw}»: палец 1–5`);
+    notes.push({ midi: pn.midi, ticks, dur: stepT * 0.92, hand: hand || (pn.midi >= 60 ? 'R' : 'L'), label: pn.letter + pn.acc, oct: pn.oct, finger: f ? +f : null });
+  };
+  const list = v => (Array.isArray(v) ? v : [v]);
+  const steps = pat.steps || [];
+  if (!steps.length) throw new Error('в pattern нет шагов');
+  for (let r = 0, k = 0; r < reps; r++) for (const step of steps) {
+    const t = k++ * stepT;
+    if (step && typeof step === 'object' && !Array.isArray(step)) {
+      for (const hd of ['R', 'L']) if (step[hd] != null) list(step[hd]).forEach(n => tok(n, hd, t));
+      if (step.R == null && step.L == null) throw new Error('шаг-объект без R и L');
+    } else list(step).forEach(n => tok(n, pat.hand === 'both' ? null : pat.hand, t));
+  }
+  const bar = PPQ * beats, last = notes.reduce((a, n) => Math.max(a, n.ticks), 0);
+  const barStarts = [], barNums = [];
+  for (let i = 0; i * bar <= last; i++) { barStarts.push(i * bar); barNums.push(i + 1); }
+  const t2s = t => t / PPQ * 60 / bpm, s2t = sec => sec * bpm / 60 * PPQ;
+  for (const n of notes) n.time = t2s(n.ticks);
+  return finishSong({ notes, ppq: PPQ, ts: [beats, 4], barStarts, barNums, keySpec: 'C', bpm, t2s, s2t });
+}
+
+async function exercisesPage() {
+  const p = page(hero('Упражнения', 'Техника по темам: зачем, как правильно, ступени темпа. Ноты проверяет MIDI, чистоту — ты сам.'));
+  const body = h('div', {}, h('p', { class: 'feedback' }, 'Загружаю упражнения…')); p.append(body);
+  let list;
+  try { list = await loadExercises(true); }
+  catch (e) { body.innerHTML = ''; body.append(h('div', { class: 'empty' }, h('strong', {}, 'Упражнения не загрузились'), e.message.includes('unknown action') ? 'Мост ещё старой версии — обнови Code.gs в Apps Script (v6).' : e.message)); return; }
+  body.innerHTML = '';
+  const xs = list.exercises.filter(x => x.schemaVersion === 1), byId = Object.fromEntries(xs.map(x => [x.id, x]));
+  const row = (x, extra) => {
+    const s = exStatus(x.id), c = exClean(x.id);
+    const state = c ? `чисто на ${c}` : s === 'needs-practice' ? 'в работе' : s === 'passed' ? 'получилось' : 'новое';
+    return h('li', {}, h('a', { class: 'lesson-row', href: `#/exercise/${x.id}` },
+      h('div', { class: 'motif', html: motif(x.id, { w: 96, h: 44, n: 4 }) }),
+      h('div', {}, h('div', { class: 't' }, x.title), h('div', { class: 'g' }, extra || x.goal || '')),
+      h('span', { class: 'state ' + (c || s === 'passed' ? 'done' : s ? 'going' : '') }, state)));
+  };
+  const focus = (list.focus?.items || []).filter(f => byId[f.exercise]).slice(0, 3);
+  if (focus.length) {
+    body.append(h('h2', { class: 'section' }, 'Сейчас в фокусе'));
+    body.append(h('ul', { class: 'lesson-list focus-list' }, focus.map(f => row(byId[f.exercise], [f.why, f.tempo ? `темп ${f.tempo}` : ''].filter(Boolean).join(' · ')))));
+  }
+  if (!xs.length) body.append(h('div', { class: 'empty' }, h('strong', {}, 'Упражнений пока нет'), 'Попроси Палыча написать упражнения — они появятся здесь по темам.'));
+  const cats = [...new Set([...Object.keys(CATEGORY), ...xs.map(x => x.category)])];
+  for (const c of cats) {
+    const items = xs.filter(x => x.category === c); if (!items.length) continue;
+    body.append(h('h2', { class: 'section' }, CATEGORY[c] || c));
+    body.append(h('ul', { class: 'lesson-list' }, items.map(x => row(x))));
+  }
+  for (const e of list.errors || []) body.append(h('p', { class: 'note-bad' }, `Файл ${e.file} не читается: ${e.error}`));
+  for (const f of (list.focus?.items || []).filter(f => !byId[f.exercise])) body.append(h('p', { class: 'note-bad' }, `В фокусе упражнение «${f.exercise}», но такого файла нет.`));
+  for (const o of list.exercises.filter(x => x.schemaVersion !== 1)) body.append(h('p', { class: 'note-bad' }, `Упражнение ${o.id} в другом формате (schemaVersion ${o.schemaVersion}) — пропущено.`));
+}
+
+const EX_TEXTS = [['about', 'Что это и зачем'], ['howTo', 'Как делать правильно'], ['mistakes', 'Чего не делать'], ['variants', 'Варианты'], ['moveOn', 'Когда идти дальше']];
+async function exercisePage(id) {
+  const p = page(h('p', { class: 'feedback' }, 'Открываю упражнение…'));
+  let x;
+  try { if (!exCatalog) await loadExercises(); x = (await bridge.get({ action: 'exercise', id })).exercise; }
+  catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Упражнение не открылось'), e.message, h('p', {}, h('a', { href: '#/exercises' }, 'К упражнениям')))); return; }
+  p.innerHTML = '';
+  const missing = EX_TEXTS.map(t => t[0]).concat('basis').filter(k => !String(x[k] || '').trim());
+  p.append(h('div', { class: 'lesson-head' }, h('a', { class: 'back', href: '#/exercises' }, '‹ Все упражнения'), h('h1', {}, x.title),
+    x.goal ? h('p', { class: 'goal' }, x.goal) : null, h('span', { class: 'chip-tag' }, CATEGORY[x.category] || x.category || 'без темы')));
+  if (missing.length) p.append(h('p', { class: 'note-bad' }, `В файле не хватает: ${missing.join(', ')} — скажи Палычу.`));
+  for (const [k, title] of EX_TEXTS) {
+    if (!x[k]) continue;
+    const sec = h('section', { class: 'block' }, h('h3', {}, title), renderMarkup(x[k]));
+    p.append(sec);
+    if (k === 'howTo') for (const b of x.blocks || []) {
+      const wrap = h('section', { class: 'block' }); if (b.title) wrap.append(h('h3', {}, b.title));
+      try { if (!['staff', 'keyboard', 'image'].includes(b.type)) throw new Error(`в упражнении только staff, keyboard, image, не «${b.type}»`); wrap.append(BLOCKS[b.type](b, x)); }
+      catch (e) { wrap.append(h('p', { class: 'note-bad' }, `Блок ${b.id || ''} не показан: ${e.message}`)); }
+      p.append(wrap);
+    }
+  }
+  if (x.basis) { const d = h('details', { class: 'toggle block' }, h('summary', {}, 'На чём основано')); d.append(renderMarkup(x.basis)); p.append(d); }
+
+  /* practice: tempo, optional pattern through the player, then Stas rates the attempt */
+  const offer = offeredTempo(x);
+  let bpm = offer ? offer.bpm : null, lastPass = null;
+  const prac = h('section', { class: 'block stage practice' }, h('div', { class: 'top' }, h('span', { class: 'kind' }, 'Практика'), h('span')));
+  p.append(prac);
+  const bpmVal = h('span', { class: 'bpm-big' });
+  const ladder = h('div', { class: 'ladder' });
+  const drawLadder = () => {
+    const t = x.tempo; ladder.innerHTML = ''; if (!t) return;
+    const c = exClean(x.id);
+    for (let v = t.start; v <= t.target; v += t.step) ladder.append(h('span', { class: 'rung' + (c && v <= c ? ' clean' : '') + (v === bpm ? ' cur' : '') }, String(v)));
+  };
+  const setBpm = v => { bpm = Math.max(20, Math.min(300, v)); bpmVal.textContent = bpm; drawLadder(); if (metro.on && !document.body.classList.contains('playing')) metro.setBpm(bpm); rebuild(); };
+  if (x.tempo) {
+    prac.append(h('div', { class: 'tempo-row' },
+      h('button', { class: 'ibtn', 'aria-label': 'Медленнее', html: ICON.minus, onclick: () => setBpm(bpm - (x.tempo.step || 5)) }),
+      h('div', { class: 'tempo-mid' }, bpmVal, h('span', { class: 'hint' }, 'BPM')),
+      h('button', { class: 'ibtn', 'aria-label': 'Быстрее', html: ICON.plus, onclick: () => setBpm(bpm + (x.tempo.step || 5)) }),
+      h('button', { class: 'btn', 'data-metro-toggle': true, onclick: () => { metro.beats = x.tempo.beats || 4; metro.setBpm(bpm); metro.toggle(); } }, metro.on ? 'Стоп' : 'Метроном')),
+      h('p', { class: 'hint' }, offer.why), ladder);
+  }
+  const playerHost = h('div', { class: 'ex-player' }); prac.append(playerHost);
+  const fb = h('div', { class: 'feedback' });
+  let unmount = null;
+  function rebuild() {
+    if (!x.pattern) return;
+    unmount?.(); playerHost.innerHTML = '';
+    try {
+      const song = patternToSong(x, bpm || 60);
+      unmount = mountPlayer(playerHost, song, { resultId: exResultId(x.id), exercise: { bpm, beats: x.tempo?.beats || 4, onPass: r => {
+        lastPass = r; fb.className = 'feedback'; fb.textContent = `Ноты: ${Math.round(r.accuracy * 100)}% без ошибок. Теперь честно: ровно ли, свободна ли кисть, те ли пальцы?`;
+        rate.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } } });
+    } catch (e) { playerHost.append(h('p', { class: 'note-bad' }, `Ноты упражнения не читаются: ${e.message}`)); }
+  }
+  const save = status => {
+    saveResult({ id: exResultId(x.id) }, { id: 'practice' }, { accuracy: lastPass ? lastPass.accuracy : status === 'passed' ? 1 : 0, avgResponseMs: lastPass ? lastPass.avgResponseMs : 0,
+      status, checkedBy: 'self', tempo: x.tempo ? bpm : '' });
+    if (status === 'passed' && x.tempo) { const c = store.get(K.exTempo, {}); c[exResultId(x.id)] = bpm; store.set(K.exTempo, c); }
+    fb.className = 'feedback ok';
+    fb.textContent = status === 'passed' ? (x.tempo ? `Записал: чисто на ${bpm}.` + (bpm < x.tempo.target ? ` В следующий раз предложу ${Math.min(x.tempo.target, bpm + x.tempo.step)}.` : ' Цель взята.') : 'Записал: получилось.') : 'Записал: ещё надо. Темп оставлю.';
+    lastPass = null; drawLadder();
+  };
+  const rate = h('div', { class: 'row rate' },
+    h('button', { class: 'btn primary', onclick: () => save('passed') }, x.tempo ? h('span', {}, 'Чисто на ', h('span', { 'data-bpm': true }), ' BPM') : 'Получилось'),
+    h('button', { class: 'btn', onclick: () => save('needs-practice') }, 'Ещё надо'));
+  prac.append(rate, fb);
+  const syncBpmLabels = () => rate.querySelectorAll('[data-bpm]').forEach(el => (el.textContent = bpm));
+  if (x.tempo) { bpmVal.textContent = bpm; drawLadder(); syncBpmLabels(); }
+  rebuild();
+  // keep the rating button's tempo in step with the selector
+  prac.addEventListener('click', () => setTimeout(syncBpmLabels, 0));
+  keepAwake();
+  const stopMetro = () => { if (metro.on) metro.stop(); window.removeEventListener('hashchange', stopMetro); };
+  window.addEventListener('hashchange', stopMetro);
 }
 /* ---------------- songs: list + MIDI player ---------------- */
 const b64ToBytes = b64 => { const bin = atob(b64); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
@@ -896,8 +1061,17 @@ async function songPage(name) {
     if (!song.notes.length) throw new Error('в файле нет нот');
   } catch (e) { p.innerHTML = ''; p.append(h('div', { class: 'empty' }, h('strong', {}, 'Песня не открылась'), e.message, h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   p.innerHTML = '';
-  p.classList.add('wide');
-  const st = { hands: ['R', 'L'], simple: false, mode: 'wait', from: song.firstBar, to: song.bars, loop: true, tempo: 70,
+  mountPlayer(p, song, { resultId: songId(name), arrange: true,
+    head: h('div', { class: 'lesson-head' }, h('a', { class: 'back', href: '#/songs' }, '‹ Все песни'), h('h1', {}, songTitle(name)),
+      h('p', { class: 'goal' }, `${song.bars} тактов, размер ${song.ts[0]}/${song.ts[1]}, в оригинале ${song.bpm} BPM`)) });
+}
+
+// The player: falling notes, staff, wait / listen. Songs use it as a page; an exercise mounts it under its text
+// (cfg.exercise: {bpm, beats, onPass}) — no bar range, no arrangement, metronome in wait mode, pass handed back.
+function mountPlayer(p, song, cfg) {
+  const ex = cfg.exercise || null;
+  if (!ex) p.classList.add('wide');
+  const st = { hands: song.hands.filter(x => x !== 'V').length ? song.hands.filter(x => x !== 'V') : song.hands, simple: false, mode: 'wait', from: song.firstBar, to: song.bars, loop: !ex, tempo: ex ? 100 : 70,
     playing: false, running: false, letters: true, staff: true, stripKey: '', stripAt: 0, idx: 0, events: [], pressed: new Set(), wrongFlash: {}, fx: [], mistakes: 0, cleanEvents: 0, evStart: 0, times: [], view: 0, raf: 0, play: null, loopA: null };
   const range = () => [Math.min(st.from, st.to), Math.max(st.from, st.to)];
   const icon = (k, label, extra = {}) => h('button', { class: 'ibtn', 'aria-label': label, title: label, html: ICON[k], ...extra });
@@ -922,19 +1096,18 @@ async function songPage(name) {
   const tempoVal = h('span', { class: 'tempo-val' });
   const tempoIn = h('input', { type: 'range', min: 30, max: 100, step: 5, value: st.tempo, oninput: e => setTempo(+e.target.value) });
   const setup = h('div', { class: 'setup' },
-    h('div', { class: 'lesson-head' }, h('a', { class: 'back', href: '#/songs' }, '‹ Все песни'), h('h1', {}, songTitle(name)),
-      h('p', { class: 'goal' }, `${song.bars} тактов, размер ${song.ts[0]}/${song.ts[1]}, в оригинале ${song.bpm} BPM`)),
+    cfg.head || null,
     h('div', { class: 'setup-grid' },
-      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Кто играет'), handChips('chips')),
-      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Аранжировка'), h('div', { class: 'row' }, h('div', { class: 'seg' }, arrBtn(false, 'Как в файле'), arrBtn(true, 'Упрощённо')), arrInfo)),
+      song.hands.length > 1 ? h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Кто играет'), handChips('chips')) : null,
+      cfg.arrange ? h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Аранжировка'), h('div', { class: 'row' }, h('div', { class: 'seg' }, arrBtn(false, 'Как в файле'), arrBtn(true, 'Упрощённо')), arrInfo)) : null,
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Режим'), h('div', { class: 'seg' }, modeBtn('wait', 'Ждать меня', 'seg-b'), modeBtn('listen', 'Послушать', 'seg-b'))),
-      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Такты'), h('div', { class: 'row' }, fromIn, h('span', { class: 'dash' }, '—'), toIn, h('label', { class: 'ctl' }, loopCb, 'по кругу'))),
-      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Темп «Послушать»'), h('div', { class: 'row' }, tempoIn, tempoVal)),
+      ex ? null : h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Такты'), h('div', { class: 'row' }, fromIn, h('span', { class: 'dash' }, '—'), toIn, h('label', { class: 'ctl' }, loopCb, 'по кругу'))),
+      ex ? null : h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Темп «Послушать»'), h('div', { class: 'row' }, tempoIn, tempoVal)),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Подсказки'), h('div', { class: 'row' },
         h('label', { class: 'ctl' }, h('input', { type: 'checkbox', checked: true, onchange: e => { st.staff = e.target.checked; st.stripKey = ''; stripHost.hidden = !st.staff; layout(); } }), 'нотный стан'),
         h('label', { class: 'ctl' }, h('input', { type: 'checkbox', checked: true, onchange: e => { st.letters = e.target.checked; } }), 'буквы на нотах')))),
     h('div', { class: 'row' }, h('button', { class: 'btn primary big', onclick: enterPlay, html: ICON.play + '<span>Играть</span>' }),
-      h('p', { class: 'hint' }, 'В игре: тяни ноты пальцем, чтобы отмотать. Тап по номеру такта — играть оттуда, долгое нажатие на два такта — гонять кусок по кругу. На пианино: A0 — пропустить, B0 — такт назад.')));
+      h('p', { class: 'hint' }, ex ? `Метроном в режиме «Ждать меня» тикает на ${ex.bpm || '—'} BPM; приложение проверяет только ноты, ровность оцениваешь сам. На пианино: A0 — пропустить, B0 — назад.` : 'В игре: тяни ноты пальцем, чтобы отмотать. Тап по номеру такта — играть оттуда, долгое нажатие на два такта — гонять кусок по кругу. На пианино: A0 — пропустить, B0 — такт назад.')));
 
   /* ---- play bar (fullscreen mode) ---- */
   const playBtn = icon('play', 'Пауза / продолжить', { onclick: () => (st.playing ? pause() : resume()) });
@@ -944,7 +1117,7 @@ async function songPage(name) {
   const playBar = h('div', { class: 'play-bar' },
     icon('close', 'Выйти из игры', { onclick: exitPlay }),
     h('div', { class: 'pb-group' }, icon('prev', 'Такт назад', { onclick: () => stepBar(-1) }), playBtn, icon('next', 'Такт вперёд', { onclick: () => stepBar(1) })),
-    loopBtn, handChips('pb-hands'), simpleChip,
+    ex ? null : loopBtn, song.hands.length > 1 ? handChips('pb-hands') : null, cfg.arrange ? simpleChip : null,
     h('div', { class: 'seg small' }, modeBtn('wait', 'Ждать', 'seg-b'), modeBtn('listen', 'Слушать', 'seg-b')),
     tempoChip, status);
   const canvas = h('canvas', { class: 'roll' });
@@ -1196,7 +1369,8 @@ async function songPage(name) {
   function finishPass() {
     const total = st.events.length, acc = total ? st.cleanEvents / total : 0, [a, b] = range();
     const status = acc >= 0.9 ? 'passed' : 'needs-practice';
-    saveResult({ id: songId(name) }, { id: `${st.hands.slice().sort().join('').toLowerCase()}${st.simple ? '-s' : ''}-${a}-${b}` },
+    if (ex) { ex.onPass({ accuracy: Math.round(acc * 1000) / 1000, avgResponseMs: Math.round(st.times.reduce((x, y) => x + y, 0) / Math.max(1, st.times.length)) }); st.cleanEvents = 0; st.mistakes = 0; st.times = []; st.idx = 0; exitPlay(); return; }
+    saveResult({ id: cfg.resultId }, { id: `${st.hands.slice().sort().join('').toLowerCase()}${st.simple ? '-s' : ''}-${a}-${b}` },
       { accuracy: Math.round(acc * 1000) / 1000, avgResponseMs: Math.round(st.times.reduce((x, y) => x + y, 0) / Math.max(1, st.times.length)), status, checkedBy: 'midi' });
     toast(`Проход: ${Math.round(acc * 100)}% без ошибок${status === 'passed' ? ' — зачёт' : ''}`);
     st.cleanEvents = 0; st.mistakes = 0; st.times = [];
@@ -1227,9 +1401,10 @@ async function songPage(name) {
     if (!st.events.length) return;
     st.playing = true; activate(ctrl); keepAwake();
     if (st.mode === 'listen') startListen(); else { synth.silence(); st.play = null; st.evStart = performance.now(); }
+    if (ex && ex.bpm) { if (st.mode === 'wait') { metro.beats = ex.beats || 4; metro.setBpm(ex.bpm); if (!metro.on) metro.start(); } else if (metro.on) metro.stop(); }
     syncUi();
   }
-  function pause() { st.playing = false; synth.silence(); st.play = null; syncUi(); }
+  function pause() { st.playing = false; synth.silence(); st.play = null; if (ex && metro.on) metro.stop(); syncUi(); }
   function enterPlay() { document.body.classList.add('playing'); window.scrollTo(0, 0); layout(); resume(); }
   function exitPlay() { pause(); document.body.classList.remove('playing'); layout(); }
 
@@ -1271,6 +1446,7 @@ async function songPage(name) {
   activate(ctrl);
   const cleanup = () => { cancelAnimationFrame(st.raf); window.removeEventListener('resize', onResize); pause(); document.body.classList.remove('playing'); window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
+  return cleanup;
 }
 
 function settingsPage() {
@@ -1293,12 +1469,13 @@ function route() {
   activate(null);
   const [, sec, arg] = (location.hash || '#/theory').split('/');
   document.body.classList.remove('drawer-open');
-  const cur = sec === 'lesson' ? 'theory' : sec === 'song' ? 'songs' : (sec || 'theory');
+  const cur = sec === 'lesson' ? 'theory' : sec === 'song' ? 'songs' : sec === 'exercise' ? 'exercises' : (sec || 'theory');
   document.querySelectorAll('[data-nav]').forEach(a => (a.dataset.nav === cur ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  $('#crumb').textContent = { theory: 'теория', lesson: 'урок', exercises: 'упражнения', songs: 'песни', song: 'песня', settings: 'настройки' }[sec] || '';
+  $('#crumb').textContent = { theory: 'теория', lesson: 'урок', exercises: 'упражнения', exercise: 'упражнение', songs: 'песни', song: 'песня', settings: 'настройки' }[sec] || '';
   if (!bridge.url() && sec !== 'settings') { location.hash = '#/settings'; toast('Сначала вставь адрес моста'); return; }
   if (sec === 'lesson' && arg) return lessonPage(decodeURIComponent(arg));
   if (sec === 'exercises') return exercisesPage();
+  if (sec === 'exercise' && arg) return exercisePage(decodeURIComponent(arg));
   if (sec === 'songs') return songsPage();
   if (sec === 'song' && arg) return songPage(decodeURIComponent(arg));
   if (sec === 'settings') return settingsPage();

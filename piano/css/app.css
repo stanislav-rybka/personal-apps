@@ -279,3 +279,17 @@ body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0
 .strip.score::-webkit-scrollbar { display: none; }
 .strip.score .score-inner { width: max-content; }
 .strip.score svg { display: block; }
+
+/* exercises */
+.chip-tag { display: inline-block; margin-top: 8px; padding: 4px 12px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+.focus-list .lesson-row { border-color: var(--right); }
+.practice .tempo-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 0 4px; }
+.practice .tempo-mid { display: flex; align-items: baseline; gap: 6px; min-width: 88px; justify-content: center; }
+.practice .bpm-big { font: 700 40px/1 var(--display); color: var(--paper); }
+.ladder { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+.ladder .rung { padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+.ladder .rung.clean { border-color: var(--ok); color: var(--ok); }
+.ladder .rung.cur { background: var(--surface-2); color: var(--paper); box-shadow: inset 0 -2px 0 var(--right); }
+.ex-player { margin: 10px 0 14px; }
+.ex-player .setup .setup-grid { margin-top: 0; }
+.practice .rate { margin-top: 10px; }

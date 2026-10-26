@@ -8,9 +8,13 @@
  * GET  ?action=image&name=<file>  -> {ok, mime, data(base64)}   (files in lessons/img, max 3 MB)
  * GET  ?action=songs           -> {ok, songs:[{name,size,updated}]}   (Music/Piano/songs: .mid .midi .musicxml .xml .mxl)
  * GET  ?action=song&name=<file>  -> {ok, name, data(base64)}
- * GET  ?action=progress        -> {ok, latest:{lessonId:{blockId:{status,savedAt}}}}
+ * GET  ?action=progress        -> {ok, latest:{lessonId:{blockId:{status,savedAt,tempo,cleanTempo}}}}
  * GET  ?action=lesson&id=<id>  -> {ok, lesson}
- * POST body (text/plain, JSON) -> {ok, saved:true, attemptId, duplicate}
+ * GET  ?action=exercises       -> {ok, exercises:[{id,title,goal,category,pattern,tempo}], focus, errors:[{file,error}]}
+ * GET  ?action=exercise&id=<id> -> {ok, exercise}
+ * POST body (text/plain, JSON) -> {ok, saved:true, attemptId, duplicate}   (optional tempo, BPM)
+ *
+ * v6: exercises folder, focus.json, tempo column.
  *
  * Client must send POST as Content-Type: text/plain — application/json triggers a CORS
  * preflight that Apps Script cannot answer.
@@ -20,10 +24,11 @@
 const LESSONS_FOLDER_ID = '1PjhnS70rxpQ0Ql5HJpn9HTeeSDv9fkwf'; // Music/Piano/lessons
 const IMAGES_FOLDER_ID  = '1_gZnO9uqeSAdBpEdEKtubo1WBe4B9NcN'; // Music/Piano/lessons/img
 const SONGS_FOLDER_ID   = '1-Z-K7tpGLHXOEut55Xol678RVgfXQS9S'; // Music/Piano/songs
+const EXERCISES_FOLDER_ID = '1tSBB01ehOjcwHxMpBf4QOJONkPVB7Def'; // Music/Piano/exercises
 const RESULTS_SHEET_ID  = '1o-7dB_HxpW-Lr9fGynUfxmd_fEjZ49rOaEFCxH7q-gI'; // piano-results
 const RESULTS_TAB = 'results';
 const HEADERS = ['savedAt', 'attemptId', 'lessonId', 'blockId', 'accuracy', 'avgResponseMs',
-                 'status', 'checkedBy', 'finishedAt', 'client'];
+                 'status', 'checkedBy', 'finishedAt', 'client', 'tempo'];
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const STATUSES = ['passed', 'needs-practice', 'in-progress', 'not-assessed'];
@@ -41,6 +46,8 @@ function doGet(e) {
       case 'image': return json_(image_(p.name));
       case 'songs': return json_(songs_());
       case 'song': return json_(song_(p.name));
+      case 'exercises': return json_(listExercises_());
+      case 'exercise': return json_({ ok: true, exercise: getExercise_(p.id) });
       default:       return json_({ ok: false, error: 'unknown action' });
     }
   } catch (err) {
@@ -62,7 +69,7 @@ function doPost(e) {
         .createTextFinder(r.attemptId).matchEntireCell(true).findNext();
       if (!dup) {
         sheet.appendRow([new Date().toISOString(), r.attemptId, r.lessonId, r.blockId, r.accuracy,
-                         r.avgResponseMs, r.status, r.checkedBy, r.finishedAt, r.client]);
+                         r.avgResponseMs, r.status, r.checkedBy, r.finishedAt, r.client, r.tempo]);
         SpreadsheetApp.flush();
       }
       return json_({ ok: true, saved: true, attemptId: r.attemptId, duplicate: !!dup });
@@ -75,8 +82,8 @@ function doPost(e) {
 }
 
 // Live .json files only; for duplicate names the newest wins (lessons are replaced via trash + create).
-function lessonFiles_() {
-  const it = DriveApp.getFolderById(LESSONS_FOLDER_ID).getFiles();
+function lessonFiles_(folderId) {
+  const it = DriveApp.getFolderById(folderId || LESSONS_FOLDER_ID).getFiles();
   const byName = {};
   while (it.hasNext()) {
     const f = it.next();
@@ -105,6 +112,32 @@ function listLessons_() {
   return { ok: true, lessons: lessons, errors: errors };
 }
 
+function listExercises_() {
+  const files = lessonFiles_(EXERCISES_FOLDER_ID);
+  const exercises = [], errors = [];
+  let focus = null;
+  for (const name in files) {
+    try {
+      const x = JSON.parse(files[name].getBlob().getDataAsString('UTF-8'));
+      if (name === 'focus.json') { focus = x; continue; }
+      if (!x.id || !x.title) throw new Error('no id or title');
+      exercises.push({ id: x.id, title: x.title, goal: x.goal || '', category: x.category || '', schemaVersion: x.schemaVersion,
+                       pattern: !!x.pattern, tempo: x.tempo || null });
+    } catch (err) {
+      errors.push({ file: name, error: String(err.message || err) });
+    }
+  }
+  exercises.sort((a, b) => a.id < b.id ? -1 : 1);
+  return { ok: true, exercises: exercises, focus: focus, errors: errors };
+}
+
+function getExercise_(id) {
+  if (!ID_RE.test(String(id || ''))) throw new Error('bad exercise id');
+  const f = lessonFiles_(EXERCISES_FOLDER_ID)[id + '.json'];
+  if (!f) throw new Error('exercise not found: ' + id);
+  return JSON.parse(f.getBlob().getDataAsString('UTF-8'));
+}
+
 // Latest status per lesson block; rows are appended in time order, so the last one wins.
 function progress_() {
   const sh = resultsSheet_();
@@ -115,7 +148,10 @@ function progress_() {
   rows.forEach(function (r) {
     const lessonId = r[2], blockId = r[3];
     if (!lessonId || !blockId) return;
-    (out[lessonId] = out[lessonId] || {})[blockId] = { status: r[6], savedAt: r[0] };
+    const lesson = (out[lessonId] = out[lessonId] || {}), prev = lesson[blockId] || {};
+    const tempo = r[10] === '' ? null : Number(r[10]);
+    lesson[blockId] = { status: r[6], savedAt: r[0], tempo: tempo,
+                        cleanTempo: r[6] === 'passed' && tempo ? tempo : (prev.cleanTempo || null) };
   });
   return out;
 }
@@ -172,8 +208,10 @@ function validateResult_(b) {
     status: s(b.status, 20),
     checkedBy: s(b.checkedBy, 10),
     finishedAt: s(b.finishedAt, 40),
-    client: String(b.client || '').slice(0, 100)
+    client: String(b.client || '').slice(0, 100),
+    tempo: b.tempo == null || b.tempo === '' ? '' : Math.round(Number(b.tempo))
   };
+  if (r.tempo !== '' && !(r.tempo >= 20 && r.tempo <= 300)) throw new Error('bad tempo');
   if (!/^[A-Za-z0-9-]{8,64}$/.test(r.attemptId)) throw new Error('bad attemptId');
   if (!ID_RE.test(r.lessonId) || !ID_RE.test(r.blockId)) throw new Error('bad lessonId/blockId');
   if (!(r.accuracy >= 0 && r.accuracy <= 1)) throw new Error('bad accuracy');
@@ -191,6 +229,7 @@ function resultsSheet_() {
     if (sh.getLastRow() === 0) sh.setName(RESULTS_TAB); else sh = ss.insertSheet(RESULTS_TAB);
   }
   if (sh.getLastRow() === 0) { sh.appendRow(HEADERS); sh.setFrozenRows(1); }
+  else if (sh.getRange(1, HEADERS.length).getValue() !== HEADERS[HEADERS.length - 1]) sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   return sh;
 }
 
@@ -201,5 +240,6 @@ function json_(obj) {
 /** Run once from the editor to grant permissions and check the IDs. */
 function selfTest() {
   Logger.log(JSON.stringify(listLessons_()));
+  Logger.log(JSON.stringify(listExercises_()));
   Logger.log(resultsSheet_().getName());
 }
