@@ -610,6 +610,34 @@ function finishSong(base) {
   const hands = [...new Set(notes.map(n => n.hand))];
   return { ...base, lo, hi, hands, firstBar: nums[0], bars: notes.length ? notes[notes.length - 1].bar : nums[0] };
 }
+// MIDI carries no pickup or short-bar markers (LilyPond starts the file with the anacrusis, and a volta bar that is
+// shorter than the meter shifts everything after it). So the bar grid's phase is guessed per bar: the phase that puts
+// the most note weight (left hand double) on the downbeat, with a penalty for changing phase (Viterbi over bars).
+// Returns bar start ticks; a leading [0, phase) pickup gets its own bar.
+function midiBarGrid(notes, bar, grid, last) {
+  const P = Math.max(1, Math.round(bar / grid)), N = Math.floor(last / bar) + 2;
+  const w = Array.from({ length: N }, () => new Float64Array(P));
+  for (const n of notes) { const ph = Math.round((n.ticks % bar) / grid), k = Math.floor(n.ticks / bar); if (Math.abs(n.ticks % bar - ph * grid) < 1 && ph < P) w[k][ph] += n.dur * (n.hand === 'L' ? 2 : 1); }
+  const avg = w.reduce((a, r) => a + Math.max(...r), 0) / N, pen = avg * 2;
+  let cost = Float64Array.from(w[0], (x, ph) => -x + (ph ? avg * 0.25 : 0)); const back = [];
+  for (let k = 1; k < N; k++) {
+    const nc = new Float64Array(P), bk = new Int16Array(P);
+    let bi = 0; for (let q = 1; q < P; q++) if (cost[q] < cost[bi]) bi = q;
+    for (let ph = 0; ph < P; ph++) { const stay = cost[ph], move = cost[bi] + pen; bk[ph] = stay <= move ? ph : bi; nc[ph] = Math.min(stay, move) - w[k][ph]; }
+    cost = nc; back.push(bk);
+  }
+  const phase = new Array(N); let cur = 0; for (let q = 1; q < P; q++) if (cost[q] < cost[cur]) cur = q;
+  for (let k = N - 1; k >= 0; k--) { phase[k] = cur; if (k) cur = back[k - 1][cur]; }
+  const starts = []; midiBarGrid.pickup = phase[0] > 0;
+  if (phase[0] > 0) starts.push(0);
+  for (let k = 0; k < N; k++) {
+    const t = k * bar + phase[k] * grid, prev = starts[starts.length - 1];
+    if (prev != null && t - prev > bar + 1) starts.push(prev + bar);   // phase moved later: a short bar fills the gap
+    if (prev == null || t > prev + 1) starts.push(t);
+  }
+  while (starts.length > 1 && starts[starts.length - 2] > last) starts.pop();
+  return starts;
+}
 function prepareMidi(m) {
   const tracks = m.tracks.filter(t => t.notes.length);
   const avg = t => t.notes.reduce((a, n) => a + n.midi, 0) / t.notes.length;
@@ -622,7 +650,8 @@ function prepareMidi(m) {
   const ppq = m.header.ppq, ts = m.header.timeSignatures[0]?.timeSignature || [4, 4];
   const bar = ppq * 4 * ts[0] / ts[1], last = notes.reduce((a, n) => Math.max(a, n.ticks), 0);
   const barStarts = [], barNums = [];
-  for (let k = 0; k * bar <= last + bar; k++) { barStarts.push(k * bar); barNums.push(k + 1); }
+  const gridStarts = midiBarGrid(notes, bar, ppq / 4, last), first = midiBarGrid.pickup ? 0 : 1;
+  gridStarts.forEach((t, i) => { barStarts.push(t); barNums.push(first + i); });
   const ks = m.header.keySignatures[0];
   // @tonejs/midi names the key by its accidentals (A minor → 'C', scale 'minor'), so the name is already the staff key
   const keySpec = ks ? ks.key : 'C', flats = /b/.test(keySpec) || keySpec === 'F';
