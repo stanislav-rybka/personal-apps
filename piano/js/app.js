@@ -817,11 +817,18 @@ function voiceChord(sym, set, prev) {
   const p = chParse(sym); if (!p) return null;
   const iv = chordTones(p, set.sev);
   const label = n => chName(n % 12, LET.indexOf(p.rootL) + STEP_OF[((n % 12) - p.root + 12) % 12]);
-  // candidate close-position voicings: every rotation of the three tones, lowest note between E3 and E4
-  const pcs = iv.map(x => (p.root + x) % 12), cands = [];
+  // left hand first: bass between C2 and B2 (+ fifth or the chord root above it)
+  let b = 36; while (b % 12 !== p.bass) b++;
+  const lh = [b];
+  if (set.lh === 'bass5') {
+    const fifthIv = /^(dim|o|m7b5)/.test(p.q) ? 6 : /^(aug|\+)/.test(p.q) ? 8 : 7;
+    lh.push(p.bass === p.root ? b + fifthIv : (() => { let n = b + 1; while (n % 12 !== p.root) n++; return n; })());
+  }
+  // right hand: close three-note voicings, every rotation, always above the left hand (one key can't be in both hands)
+  const pcs = iv.map(x => (p.root + x) % 12), cands = [], low = Math.max(52, lh[lh.length - 1] + 1);
   for (let r = 0; r < 3; r++) {
     const order = pcs.slice(r).concat(pcs.slice(0, r));
-    for (let base = 52; base <= 64; base++) {
+    for (let base = low; base <= 67; base++) {
       if (base % 12 !== order[0]) continue;
       const v = [base]; for (const pc of order.slice(1)) { let n = v[v.length - 1] + 1; while (n % 12 !== pc) n++; v.push(n); }
       if (v[2] - v[0] <= 12) cands.push({ v, r });
@@ -834,12 +841,6 @@ function voiceChord(sym, set, prev) {
     const cost = c => c.v.reduce((a, n, i) => a + Math.abs(n - prev.rh[i]), 0);
     rh = cands.slice().sort((a, b) => cost(a) - cost(b) || centre(a) - centre(b))[0].v;
   } else rh = (rootFirst.length ? rootFirst : cands).slice().sort((a, b) => centre(a) - centre(b))[0].v;
-  let b = 40; while (b % 12 !== p.bass) b++;
-  const lh = [b];
-  if (set.lh === 'bass5') {
-    const fifthIv = /^(dim|o|m7b5)/.test(p.q) ? 6 : /^(aug|\+)/.test(p.q) ? 8 : 7;
-    lh.push(p.bass === p.root ? b + fifthIv : (() => { let n = b + 1; while (n % 12 !== p.root) n++; return n; })());
-  }
   // fingers: right hand 1-3-5, or 1-2-5 when the upper interval is a fourth or wider; left hand 5 on the bass, 1 above
   const fingers = { [rh[0]]: 1, [rh[1]]: rh[2] - rh[1] >= 5 ? 2 : 3, [rh[2]]: 5, [lh[0]]: 5 };
   if (lh[1]) fingers[lh[1]] = 1;
@@ -869,7 +870,7 @@ function chartEditPage(id) {
   const ta = h('textarea', { class: 'sheet-in', spellcheck: 'false', placeholder: 'Am           Dm\nстрока текста\nE7           Am\nстрока текста' });
   ta.value = c ? c.text : '';
   const info = h('p', { class: 'hint' });
-  const check = () => { const n = parseSheet(ta.value).items.length; info.textContent = n ? `Нашёл аккордов: ${n}` : 'Аккордов пока не вижу — нужна строка, где только аккорды.'; };
+  const check = () => { const it = parseSheet(ta.value).items, u = [...new Set(it.map(i => i.sym))]; info.textContent = it.length ? `Аккорды: ${u.join(' · ')} — разных ${u.length}, по тексту ${it.length} смен` : 'Аккордов пока не вижу — нужна строка, где только аккорды.'; };
   ta.addEventListener('input', () => { if (!title.value.trim()) { const first = ta.value.split('\n').map(s => s.trim()).find(s => s && !chordLine(s)); if (first) title.placeholder = first.slice(0, 60); } check(); });
   const save = () => {
     const parsed = parseSheet(ta.value);
@@ -878,7 +879,11 @@ function chartEditPage(id) {
     charts.put({ id: nid, title: title.value.trim() || title.placeholder.replace(/^Название$/, '') || 'Без названия', text: ta.value, set: c ? c.set : { ...CH_SET_DEFAULT }, pos: 0 });
     location.hash = `#/chart/${nid}`;
   };
-  p.append(h('div', { class: 'chart-edit' }, title, ta, info,
+  const paste = navigator.clipboard?.readText ? h('button', { class: 'btn', onclick: async () => {
+    try { const t = await navigator.clipboard.readText(); if (!t.trim()) { toast('Буфер пустой'); return; } ta.value = t; ta.dispatchEvent(new Event('input')); }
+    catch { toast('Браузер не дал прочитать буфер — вставь долгим нажатием в поле'); }
+  } }, 'Вставить из буфера') : null;
+  p.append(h('div', { class: 'chart-edit' }, title, paste, ta, info,
     h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: save }, 'Готово'),
       c ? h('button', { class: 'btn quiet', onclick: () => { if (confirm('Удалить песню с планшета?')) { charts.del(c.id); location.hash = '#/songs'; } } }, 'Удалить') : null)));
   check();
@@ -981,13 +986,13 @@ function chartPage(id) {
       if (e.note === 23) { go(pos - 1, false); return; }
       const v = voices[pos]; if (!v) return;
       clearTimeout(timer);
-      if (midi.held.size >= v.lh.length + v.rh.length) timer = setTimeout(judge, 140);
+      if (midi.held.size >= new Set([...v.lh, ...v.rh]).size) timer = setTimeout(judge, 140);
     },
     stop() { clearTimeout(timer); stopListen(); }
   };
   function judge() {
     const v = voices[pos]; if (!v) return;
-    const want = [...v.lh, ...v.rh].sort((a, b) => a - b), got = [...midi.held].sort((a, b) => a - b);
+    const want = [...new Set([...v.lh, ...v.rh])].sort((a, b) => a - b), got = [...midi.held].sort((a, b) => a - b);
     if (want.length === got.length && want.every((n, i) => n === got[i])) { fb.className = 'feedback ok ch-fb'; fb.textContent = 'Верно'; setTimeout(() => go(pos + 1, false), 180); }
     else { fb.className = 'feedback bad ch-fb'; fb.textContent = `Сыграл ${got.map(midiName).join(' ')} — нужно ${want.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' ')}`; }
   }
@@ -1033,7 +1038,7 @@ async function songsPage() {
   p.append(mine.length ? h('ul', { class: 'lesson-list' }, mine.map(cc => { const items = parseSheet(cc.text).items; return h('li', {}, h('a', { class: 'lesson-row', href: '#/chart/' + cc.id },
     h('div', { class: 'motif', html: motif(cc.id, { w: 96, h: 44, n: 4 }) }),
     h('div', {}, h('div', { class: 't' }, cc.title), h('div', { class: 'g' }, [...new Set(items.map(i => i.sym))].slice(0, 6).join(' · '))),
-    h('span', { class: 'state' }, `${items.length} акк.`))); })) : h('p', { class: 'hint' }, 'Скопируй с любого сайта текст с аккордами и вставь — приложение покажет, что нажимать обеими руками.'));
+    h('span', { class: 'state' }, `${new Set(items.map(i => i.sym)).size} акк.`))); })) : h('p', { class: 'hint' }, 'Скопируй с любого сайта текст с аккордами и вставь — приложение покажет, что нажимать обеими руками.'));
   p.append(h('h2', { class: 'section' }, 'По нотам'));
   const body = h('div', {}, h('p', { class: 'feedback' }, 'Загружаю песни…')); p.append(body);
   let list;
