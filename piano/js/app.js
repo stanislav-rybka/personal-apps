@@ -22,7 +22,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: work without */ } }
 };
-const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', progress: 'pa.piano.progress', read: 'pa.piano.read', bpm: 'pa.piano.bpm', exTempo: 'pa.piano.exTempo', charts: 'pa.piano.charts' };
+const K = { url: 'pa.piano.bridgeUrl', queue: 'pa.piano.queue', progress: 'pa.piano.progress', read: 'pa.piano.read', bpm: 'pa.piano.bpm', exTempo: 'pa.piano.exTempo', charts: 'pa.piano.charts', songsTab: 'pa.piano.songsTab' };
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -801,7 +801,7 @@ function parseSheet(text) {
 }
 
 // voicing: right hand three notes (root position or nearest to the previous chord), left hand bass (+ fifth)
-const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4 };
+const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4, check: 'sound', hints: 'off', hands: 'both' };
 function chordTones(p, sev) {
   const iv = (sev === 'triad' ? CH_TRIAD(p.q) : (CH_Q[p.q] || CH_TRIAD(p.q))).map(x => x % 12);
   const uniq = [...new Set(iv)];
@@ -921,23 +921,40 @@ function chartPage(id) {
   const set = { ...CH_SET_DEFAULT, ...(c.set || {}) };
   const parsed = parseSheet(c.text);
   let voices = voiceAll(parsed.items, set), pos = Math.min(c.pos || 0, parsed.items.length - 1);
+  let drill = null; // index of a chord being warmed up from the list (the song position stays put)
   const p = page();
   p.classList.add('chart-page');
   const save = () => charts.put({ ...charts.get(id), set, pos });
+  const useL = () => set.hands !== 'R', useR = () => set.hands !== 'L';
 
   /* sticky panel: chord now / next, hands, keyboard, controls */
   const nowEl = h('span', { class: 'ch-now' }), nextEl = h('span', { class: 'ch-next' }), whereEl = h('span', { class: 'ch-where' });
   const lhEl = h('b'), rhEl = h('b'), kb = h('div', { class: 'kb ch-kb' }), fb = h('div', { class: 'feedback ch-fb' });
+  const lhRow = h('span', {}, h('i', { class: 'dot l' }), 'Левая: ', lhEl), rhRow = h('span', {}, h('i', { class: 'dot r' }), 'Правая: ', rhEl);
   const btn = (label, on, cls = 'btn') => h('button', { class: cls, onclick: on }, label);
   const listenBtn = btn('Послушать', () => (listening ? stopListen() : startListen()));
   let bpm = c.bpm || 72;
   const bpmV = h('span', {}, String(bpm));
   const panel = h('div', { class: 'ch-panel' },
     h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), nowEl, nextEl, whereEl),
-    h('div', { class: 'ch-hands' }, h('span', {}, h('i', { class: 'dot l' }), 'Левая: ', lhEl), h('span', {}, h('i', { class: 'dot r' }), 'Правая: ', rhEl)),
+    h('div', { class: 'ch-hands' }, lhRow, rhRow),
     kb, fb,
     h('div', { class: 'row ch-ctl' }, btn('← Назад', () => go(pos - 1, true)), btn('Дальше →', () => go(pos + 1, true), 'btn primary'), listenBtn,
       h('label', { class: 'ctl' }, 'Темп ', h('input', { type: 'range', min: 50, max: 140, step: 2, value: bpm, oninput: e => { bpm = +e.target.value; bpmV.textContent = bpm; } }), bpmV)));
+
+  /* the song's chords as a warm-up strip: tap one to see and drill it without leaving your place */
+  const strip = h('div', { class: 'ch-strip' });
+  function drawStrip() {
+    strip.innerHTML = '';
+    const seen = new Map(); parsed.items.forEach((it, i) => { if (!seen.has(it.sym)) seen.set(it.sym, i); });
+    strip.append(h('span', { class: 'lbl' }, 'Аккорды песни'));
+    for (const [, i] of seen) {
+      const v = voices[i]; if (!v) continue;
+      const b = h('button', { class: 'chip ch-chip' + (drill === i ? ' on' : ''), onclick: () => { drill = drill === i ? null : i; drawStrip(); render(drill ?? pos, true); } }, v.sym);
+      strip.append(b);
+    }
+    if (drill != null) strip.append(h('button', { class: 'chip quiet', onclick: () => { drill = null; drawStrip(); render(pos, false); } }, '← к песне'));
+  }
 
   /* settings */
   const seg = (key, opts) => h('div', { class: 'seg' }, opts.map(([v, label]) => {
@@ -946,12 +963,16 @@ function chartPage(id) {
   const trVal = h('b', { class: 'tr-v' });
   const settings = h('details', { class: 'toggle ch-set' }, h('summary', {}, 'Настройки разбора'),
     h('div', { class: 'setup-grid' },
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Проверка'), seg('check', [['sound', 'По звучанию'], ['shape', 'По форме']])),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Руки'), seg('hands', [['both', 'Обе'], ['R', 'Правая'], ['L', 'Левая']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Правая рука'), seg('rh', [['root', 'Основной вид'], ['near', 'Ближайшая форма']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Левая рука'), seg('lh', [['bass', 'Только бас'], ['bass5', 'Бас + квинта']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Септаккорды'), seg('sev', [['keep', 'Как в шпаргалке'], ['triad', 'Упростить']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Тональность'), h('div', { class: 'row' },
         btn('−', () => { set.tr = Math.max(-11, set.tr - 1); applySettings(); }), trVal, btn('+', () => { set.tr = Math.min(11, set.tr + 1); applySettings(); }))),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Подсказка при ошибке'), seg('hints', [['off', 'Не показывать'], ['on', 'Показывать']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, '«Послушать»: долей на аккорд'), seg('beats', [[2, '2'], [3, '3'], [4, '4']]))),
+    h('p', { class: 'hint' }, '«По звучанию» — нужные ноты в любом порядке, октаве и раскладке, перебором тоже; бас ниже всех. «По форме» — показанное обращение, клавиши вместе.'),
     h('div', { class: 'row' }, h('a', { class: 'btn quiet', href: `#/chart/${id}/edit`, style: 'text-decoration:none' }, 'Изменить текст')));
 
   /* the sheet: lyrics as pasted, chords as buttons over the words */
@@ -978,66 +999,96 @@ function chartPage(id) {
     voices = voiceAll(parsed.items, set);
     settings.querySelectorAll('.seg-b').forEach(b => b.classList.toggle('on', String(set[b.dataset.k]) === String(b.dataset.v)));
     trVal.textContent = (set.tr > 0 ? '+' : '') + set.tr;
-    drawSheet(); go(pos, false); save();
+    drawSheet(); drawStrip(); render(drill ?? pos, false); save();
+  }
+  const noteName = (v, n) => v.names[n] + (Math.floor(n / 12) - 1);
+  // draw the panel for chord i (the song position, or a chord being drilled)
+  function render(i, sound) {
+    const v = voices[i], nx = drill == null ? voices[i + 1] : null;
+    nowEl.textContent = v ? v.sym : (parsed.items[i]?.sym || '') + ' ?';
+    nextEl.textContent = drill != null ? 'разминка' : nx ? 'дальше ' + nx.sym : i + 1 >= parsed.items.length ? 'конец' : '';
+    whereEl.textContent = drill != null ? '' : `${i + 1} из ${parsed.items.length}`;
+    lhEl.textContent = v ? v.lh.map(n => noteName(v, n)).join(' + ') : '—';
+    rhEl.textContent = v ? v.rh.map(n => noteName(v, n)).join(' ') : 'аккорд не разобрал';
+    lhRow.hidden = !useL(); rhRow.hidden = !useR();
+    const hl = {}, fingers = {}, names = {};
+    if (v) {
+      if (useL()) v.lh.forEach(n => { hl[n] = COLORS.left; fingers[n] = v.fingers[n]; names[n] = v.names[n]; });
+      if (useR()) v.rh.forEach(n => { hl[n] = COLORS.right; fingers[n] = v.fingers[n]; names[n] = v.names[n]; });
+    }
+    drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names, fingers });
+    fb.className = 'feedback ch-fb'; fb.textContent = '';
+    acc = new Set(); accLow = null; lock = false;
+    if (sound === true && v && !listening) playVoice(v, 1.2);
   }
   function go(i, sound) {
     if (!parsed.items.length) return;
+    drill = null; drawStripIfDrill();
     pos = Math.max(0, Math.min(parsed.items.length - 1, i));
-    const v = voices[pos], nx = voices[pos + 1];
-    nowEl.textContent = v ? v.sym : parsed.items[pos].sym + ' ?';
-    nextEl.textContent = nx ? 'дальше ' + nx.sym : pos + 1 >= parsed.items.length ? 'конец' : '';
-    whereEl.textContent = `${pos + 1} из ${parsed.items.length}`;
-    lhEl.textContent = v ? v.lh.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' + ') : '—';
-    rhEl.textContent = v ? v.rh.map(n => v.names[n] + (Math.floor(n / 12) - 1)).join(' ') : 'аккорд не разобрал';
-    const hl = {}; if (v) { v.lh.forEach(n => (hl[n] = COLORS.left)); v.rh.forEach(n => (hl[n] = COLORS.right)); }
-    drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names: v ? v.names : {}, fingers: v ? v.fingers : {} });
+    render(pos, sound);
     chipEls.forEach((b, k) => b && b.classList.toggle('cur', k === pos));
     const el = chipEls[pos];
     if (el && sound !== 'listen') {
       const r = el.getBoundingClientRect(), top = panel.getBoundingClientRect().bottom;
       if (r.top < top + 8 || r.bottom > window.innerHeight - 8) window.scrollBy({ top: r.top - top - 80, behavior: 'smooth' });
     }
-    if (sound === true && v && !listening) playVoice(v, 1.2);
-    fb.className = 'feedback ch-fb'; fb.textContent = '';
     save();
   }
-  function playVoice(v, dur) { synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; v.lh.forEach(n => synth.play(n, t, dur, 0.3)); v.rh.forEach(n => synth.play(n, t, dur, 0.18)); }
+  function drawStripIfDrill() { if (strip.querySelector('.ch-chip.on')) drawStrip(); }
+  function playVoice(v, dur) { synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; if (useL()) v.lh.forEach(n => synth.play(n, t, dur, 0.3)); if (useR()) v.rh.forEach(n => synth.play(n, t, dur, 0.18)); }
+  function passed(played) {
+    if (lock) return; lock = true; // one pass per chord, extra keys during the hand-over don't skip the next one
+    nowEl.classList.add('ok'); setTimeout(() => nowEl.classList.remove('ok'), 260);
+    if (drill != null) { acc = new Set(); accLow = null; setTimeout(() => (lock = false), 160); return; }
+    const v = voices[pos];
+    if (played && set.rh === 'near' && useR() && played.rh[0] !== v.rh[0]) voices = voices.slice(0, pos + 1).concat(voiceAll(parsed.items.slice(pos + 1), set, played));
+    setTimeout(() => go(pos + 1, false), 160);
+  }
+  function missed(text) { if (set.hints === 'on') { fb.className = 'feedback bad ch-fb'; fb.textContent = text; } }
 
-  /* play the chord → next one. Strict: exactly the keys shown, both hands together */
-  let timer = null;
+  /* checking. «По звучанию»: notes played since the chord came up are collected (order, octave, spread and
+     arpeggio don't matter); pass when every needed note has sounded and the lowest played is the bass.
+     «По форме»: the shown voicing held together, any octave (lowest = bass, then the right hand bottom→top). */
+  let timer = null, acc = new Set(), accLow = null, lock = false;
+  const target = () => voices[drill ?? pos];
   const ctrl = {
     onMidi(e) {
       if (!e.on) return;
       if (e.note === 21) { go(pos + 1, false); return; }
       if (e.note === 23) { go(pos - 1, false); return; }
-      const v = voices[pos]; if (!v) return;
+      const v = target(); if (!v || lock) return;
+      if (set.check === 'sound') { soundCheck(v, e.note); return; }
       clearTimeout(timer);
-      if (midi.held.size >= new Set([...v.lh, ...v.rh]).size) timer = setTimeout(judge, 140);
+      const need = (useL() ? v.lh.length : 0) + (useR() ? v.rh.length : 0);
+      if (midi.held.size >= need) timer = setTimeout(shapeCheck, 140);
     },
     stop() { clearTimeout(timer); stopListen(); }
   };
-  // Octave is free: the lowest key(s) must be the bass in order, the rest the right-hand notes in the same order bottom→top
-  // (that order is the inversion). In «ближайшая форма» the next chords follow where the hand actually is.
-  function judge() {
-    const v = voices[pos]; if (!v) return;
-    const got = [...midi.held].sort((a, b) => a - b), nL = v.lh.length, nR = v.rh.length;
+  function soundCheck(v, note) {
+    const need = new Set([...(useL() ? v.lh : []), ...(useR() ? v.rh : [])].map(n => n % 12));
+    acc.add(note % 12); if (need.has(note % 12) && (accLow == null || note < accLow)) accLow = note; // a stray low key doesn't spoil the bass
+    const bassOk = !useL() || accLow % 12 === v.lh[0] % 12;
+    if ([...need].every(pc => acc.has(pc)) && bassOk) return passed(null);
+    const stray = [...acc].filter(pc => !need.has(pc));
+    if (stray.length) missed(`Лишние ноты: ${stray.map(pcName).join(' ')}. Нужно: ${[...need].map(pcName).join(' ')}${useL() ? `, бас ${pcName(v.lh[0])} ниже всех` : ''}`);
+    else if (!bassOk && [...need].every(pc => acc.has(pc))) missed(`Все ноты есть, но ниже всех должен быть бас ${pcName(v.lh[0])}`);
+  }
+  function shapeCheck() {
+    const v = target(); if (!v) return;
+    const lh = useL() ? v.lh : [], rh = useR() ? v.rh : [];
+    const got = [...midi.held].sort((a, b) => a - b), nL = lh.length;
     const pcs = a => a.map(n => n % 12).join(',');
-    const ok = got.length === nL + nR && pcs(got.slice(0, nL)) === pcs(v.lh) && pcs(got.slice(nL)) === pcs(v.rh) && got[nL - 1] < got[nL] && got[got.length - 1] - got[nL] <= 12;
-    if (ok) {
-      fb.className = 'feedback ok ch-fb'; fb.textContent = 'Верно';
-      const playedRh = got.slice(nL);
-      if (set.rh === 'near' && playedRh[0] !== v.rh[0]) voices = voices.slice(0, pos + 1).concat(voiceAll(parsed.items.slice(pos + 1), set, { rh: playedRh, lh: got.slice(0, nL) }));
-      setTimeout(() => go(pos + 1, false), 180);
-    } else {
-      const nm = n => v.names[n] || pcName(n);
-      fb.className = 'feedback bad ch-fb';
-      fb.textContent = `Сыграл ${got.map(midiName).join(' ')} — нужно: бас ${v.lh.map(nm).join(' + ')}, правая ${v.rh.map(nm).join(' ')} снизу вверх (октава любая)`;
-    }
+    const ok = got.length === lh.length + rh.length && pcs(got.slice(0, nL)) === pcs(lh) && pcs(got.slice(nL)) === pcs(rh)
+      && (!nL || !rh.length || got[nL - 1] < got[nL]) && (!rh.length || got[got.length - 1] - got[nL] <= 12);
+    if (ok) return passed({ rh: got.slice(nL), lh: got.slice(0, nL).length ? got.slice(0, nL) : v.lh });
+    const nm = n => v.names[n] || pcName(n);
+    missed(`Сыграл ${got.map(midiName).join(' ')} — нужно${lh.length ? ': бас ' + lh.map(nm).join(' + ') : ''}${rh.length ? (lh.length ? ', правая ' : ': правая ') + rh.map(nm).join(' ') + ' снизу вверх' : ''} (октава любая)`);
   }
 
   /* listen: each chord for N beats at the chosen tempo, from the current one */
   let listening = false, lt = null;
   function startListen() {
+    drill = null; drawStrip();
     listening = true; listenBtn.textContent = 'Стоп'; synth.silence(); synth.newBus(); synth.ctx.resume();
     const step = () => {
       if (!listening) return;
@@ -1049,18 +1100,18 @@ function chartPage(id) {
   }
   function stopListen() { listening = false; clearTimeout(lt); synth.silence(); listenBtn.textContent = 'Послушать'; }
 
-  p.append(panel, settings, h('div', { class: 'ch-sheet-wrap' }, sheet));
+  p.append(panel, strip, settings, h('div', { class: 'ch-sheet-wrap' }, sheet));
   // the panel sticks right under the top bar
   const pin = () => { panel.style.top = ($('.topbar')?.offsetHeight || 0) + 'px'; };
   pin(); window.addEventListener('resize', pin);
   if (!parsed.items.length) p.append(h('p', { class: 'note-bad' }, 'В тексте нет строк с аккордами.'));
   midi.held.clear();
   activate(ctrl);
-  applySettings();
+  applySettings(); go(pos, false);
   keepAwake();
   const cleanup = () => { stopListen(); clearTimeout(timer); window.removeEventListener('resize', pin); c.bpm = bpm; charts.put({ ...charts.get(id), set, pos, bpm }); window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
-  if (window.__klavishi) Object.assign(window.__klavishi, { chart: { parsed, get voices() { return voices; }, get pos() { return pos; }, set } });
+  if (window.__klavishi) Object.assign(window.__klavishi, { chart: { parsed, get voices() { return voices; }, get pos() { return pos; }, get drill() { return drill; }, set } });
 }
 
 /* ---------------- songs: list + MIDI player ---------------- */
@@ -1069,32 +1120,49 @@ const songTitle = n => n.replace(/\.(mid|midi|musicxml|xml|mxl)$/i, '');
 const songId = n => 'song-' + (songTitle(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'x');
 const HAND_COLOR = { R: COLORS.right, L: COLORS.left, V: '#b9a6f2' };
 
+// two kinds of songs, one switch: note files from Drive, and chord sheets kept on this tablet
 async function songsPage() {
-  const p = page(hero('Песни', 'Мелодия и аккомпанемент по нотам: приложение ждёт, пока сыграешь нужные клавиши, и ведёт дальше.'));
-  const mine = charts.all();
-  p.append(h('div', { class: 'row', style: 'justify-content:space-between;align-items:center' }, h('h2', { class: 'section' }, 'По аккордам'), h('a', { class: 'btn primary', href: '#/chart/new', style: 'text-decoration:none' }, '+ Вставить шпаргалку')));
-  p.append(mine.length ? h('ul', { class: 'lesson-list' }, mine.map(cc => { const items = parseSheet(cc.text).items; return h('li', {}, h('a', { class: 'lesson-row', href: '#/chart/' + cc.id },
-    h('div', { class: 'motif', html: motif(cc.id, { w: 96, h: 44, n: 4 }) }),
-    h('div', {}, h('div', { class: 't' }, cc.title), h('div', { class: 'g' }, [...new Set(items.map(i => i.sym))].slice(0, 6).join(' · '))),
-    h('span', { class: 'state' }, `${new Set(items.map(i => i.sym)).size} акк.`))); })) : h('p', { class: 'hint' }, 'Скопируй с любого сайта текст с аккордами и вставь — приложение покажет, что нажимать обеими руками.'));
-  p.append(catalogTools(() => songsPage()));
-  p.append(h('h2', { class: 'section' }, 'По нотам'));
-  const body = h('div', {}, h('p', { class: 'feedback' }, 'Загружаю песни…')); p.append(body);
+  const tab = store.get(K.songsTab, 'chords');
+  const p = page(hero('Песни', tab === 'chords' ? 'Шпаргалки с аккордами с любого сайта: приложение показывает, что нажимать обеими руками, и ведёт дальше.' : 'Файлы MIDI и MusicXML из Drive: падающие ноты, нотный стан, приложение ждёт, пока сыграешь нужные клавиши.'));
+  const tabBtn = (v, label) => h('button', { class: 'seg-b' + (tab === v ? ' on' : ''), onclick: () => { store.set(K.songsTab, v); songsPage(); } }, label);
+  const head = h('div', { class: 'row songs-head' }, h('div', { class: 'seg' }, tabBtn('chords', 'По аккордам'), tabBtn('notes', 'По нотам')));
+  p.append(head);
+  const listHost = h('div');
+  const search = (items, render) => {
+    if (items.length <= 10) { render(items); return; }
+    const q = h('input', { class: 'text-in search-in', type: 'search', placeholder: 'Найти песню', oninput: () => { const t = q.value.trim().toLowerCase(); render(items.filter(x => x.title.toLowerCase().includes(t))); } });
+    head.append(q); render(items);
+  };
+  if (tab === 'chords') {
+    head.append(h('a', { class: 'btn primary', href: '#/chart/new', style: 'text-decoration:none' }, '+ Вставить шпаргалку'));
+    p.append(listHost);
+    const mine = charts.all().map(cc => { const items = parseSheet(cc.text).items; return { ...cc, uniq: [...new Set(items.map(i => i.sym))] }; });
+    if (!mine.length) listHost.append(h('div', { class: 'empty' }, h('strong', {}, 'Шпаргалок пока нет'), 'Скопируй с любого сайта текст с аккордами и вставь — или на сайте выдели текст → «Поделиться» → «Клавиши».'));
+    else search(mine, items => { listHost.innerHTML = ''; listHost.append(h('ul', { class: 'lesson-list' }, items.map(cc => h('li', {}, h('a', { class: 'lesson-row', href: '#/chart/' + cc.id },
+      h('div', { class: 'motif', html: motif(cc.id, { w: 96, h: 44, n: 4 }) }),
+      h('div', {}, h('div', { class: 't' }, cc.title), h('div', { class: 'g' }, cc.uniq.slice(0, 7).join(' · '))),
+      h('span', { class: 'state' }, `${cc.uniq.length} акк.`)))))); });
+    p.append(h('p', { class: 'hint', style: 'margin-top:22px' }, 'Шпаргалки хранятся только на этом планшете. Копию каталога можно сохранить файлом и положить куда угодно.'), catalogTools(() => songsPage()));
+    return;
+  }
+  p.append(listHost);
+  listHost.append(h('p', { class: 'feedback' }, 'Загружаю файлы…'));
   let list;
   try { list = (await bridge.get({ action: 'songs' })).songs; }
-  catch (e) { body.innerHTML = ''; body.append(h('div', { class: 'empty' }, h('strong', {}, 'Песни не загрузились'), e.message.includes('unknown action') ? 'Мост ещё старой версии — обнови Code.gs в Apps Script.' : e.message)); return; }
-  body.innerHTML = '';
+  catch (e) { listHost.innerHTML = ''; listHost.append(h('div', { class: 'empty' }, h('strong', {}, 'Файлы не загрузились'), e.message.includes('unknown action') ? 'Мост ещё старой версии — обнови Code.gs в Apps Script.' : e.message)); return; }
+  listHost.innerHTML = '';
   const prog = store.get(K.progress, {});
-  if (!list.length) body.append(h('div', { class: 'empty' }, h('strong', {}, 'Песен пока нет'), 'Положи MIDI-файл в Google Drive → Music/Piano/songs — он появится здесь.'));
-  else body.append(h('ul', { class: 'lesson-list' }, list.map(s => {
-    const done = Object.values(prog[songId(s.name)] || {});
-    const st = done.includes('passed') ? 'going' : done.length ? 'going' : '';
-    return h('li', {}, h('a', { class: 'lesson-row', href: '#/song/' + encodeURIComponent(s.name) },
-      h('div', { class: 'motif', html: motif(s.name, { w: 96, h: 44, n: 4 }) }),
-      h('div', {}, h('div', { class: 't' }, songTitle(s.name)), h('div', { class: 'g' }, /\.midi?$/i.test(s.name) ? 'MIDI' : 'MusicXML')),
-      h('span', { class: 'state ' + st }, done.length ? `проходов: ${done.length}` : 'новая')));
-  })));
-  body.append(h('p', { class: 'feedback', style: 'text-align:left;margin-top:22px' }, 'Добавить песню по нотам: MIDI или MusicXML в Google Drive → Music/Piano/songs.'));
+  const fmt = n => /\.midi?$/i.test(n) ? 'MIDI' : /\.mxl$/i.test(n) ? 'MusicXML (.mxl)' : 'MusicXML';
+  const files = list.map(sf => ({ ...sf, title: songTitle(sf.name) }));
+  if (!files.length) listHost.append(h('div', { class: 'empty' }, h('strong', {}, 'Файлов пока нет'), 'Положи MIDI или MusicXML в Google Drive → Music/Piano/songs — он появится здесь.'));
+  else search(files, items => { listHost.innerHTML = ''; listHost.append(h('ul', { class: 'lesson-list' }, items.map(sf => {
+    const done = Object.values(prog[songId(sf.name)] || {});
+    return h('li', {}, h('a', { class: 'lesson-row', href: '#/song/' + encodeURIComponent(sf.name) },
+      h('div', { class: 'motif', html: motif(sf.name, { w: 96, h: 44, n: 4 }) }),
+      h('div', {}, h('div', { class: 't' }, sf.title), h('div', { class: 'g' }, fmt(sf.name))),
+      h('span', { class: 'state ' + (done.length ? 'going' : '') }, done.length ? `проходов: ${done.length}` : 'новая')));
+  }))); });
+  p.append(h('p', { class: 'hint', style: 'margin-top:22px' }, 'Добавить: MIDI или MusicXML в Google Drive → Music/Piano/songs.'));
 }
 
 function finishSong(base) {

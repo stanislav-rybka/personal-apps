@@ -321,3 +321,11 @@ body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0
 .ch-sheet .sc.cur { background: var(--right); color: #24180a; }
 
 .catalog-tools { margin: 6px 0 18px; flex-wrap: wrap; }
+.ch-now { transition: color .15s; } .ch-now.ok { color: var(--ok); }
+.ch-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 4px; }
+.ch-strip .lbl { color: var(--muted); font-size: 14px; margin-right: 4px; }
+.ch-chip { min-height: 40px; padding: 6px 14px; font-family: var(--display); font-weight: 600; }
+.ch-chip.on { border-color: var(--right); color: var(--right); }
+.chip.quiet { min-height: 40px; padding: 6px 12px; color: var(--muted); }
+.songs-head { flex-wrap: wrap; gap: 12px; align-items: center; margin: 4px 0 16px; }
+.search-in { flex: 1; min-width: 200px; padding: 10px 14px; font-size: 16px; }
