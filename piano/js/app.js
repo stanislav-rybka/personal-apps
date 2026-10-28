@@ -196,8 +196,8 @@ const lastOn = {};
 function onMidi(ev) {
   const [st, n, vel] = ev.data, type = st & 0xf0;
   if (type === 0x90 && vel > 0) {
-    // the same key arriving twice within a few ms is one press seen through two inputs, not a re-strike
-    const now = performance.now(); if (now - (lastOn[n] || -1e9) < 40) return; lastOn[n] = now;
+    // the same key down twice within a few ms with no key-up between is one press seen through two inputs, not a re-strike
+    const now = performance.now(); if (midi.held.has(n) && now - (lastOn[n] || -1e9) < 40) return; lastOn[n] = now;
     midi.held.add(n); $('#lastNote').textContent = midiName(n); midi.listener?.({ on: true, note: n });
   }
   else if (type === 0x80 || (type === 0x90 && vel === 0)) { midi.held.delete(n); midi.listener?.({ on: false, note: n }); }
