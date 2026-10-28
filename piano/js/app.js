@@ -808,7 +808,7 @@ function parseSheet(text) {
 }
 
 // voicing: right hand three notes (root position or nearest to the previous chord), left hand bass (+ fifth)
-const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4, check: 'sound', hints: 'off', hands: 'both' };
+const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4, check: 'sound', hints: 'off', hands: 'both', legend: 'off' };
 function chordTones(p, sev) {
   const iv = (sev === 'triad' ? CH_TRIAD(p.q) : (CH_Q[p.q] || CH_TRIAD(p.q))).map(x => x % 12);
   const uniq = [...new Set(iv)];
@@ -922,6 +922,45 @@ function chartEditPage(id) {
   check();
 }
 
+// Chord-sheet keyboard. Now: left teal, right violet, solid, with fingers and names. Next: left blue, right orange,
+// pale fill with a frame of its colour. A key in both: flows from the current colour (top) into the next one's (bottom).
+const CH_COL = { L: '#2fb5a3', R: '#9b7bf5', NL: '#5aaef0', NR: '#f2a541', paper: '#f1f2f6', black: '#1b2030' };
+function drawChordKeyboard(host, cur, nx, { useL = true, useR = true, from = 36, to = 72 } = {}) {
+  const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+  const mix = (a, b, t) => { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v * (1 - t) + y[i] * t).toString(16).padStart(2, '0')).join(''); };
+  const st = {};
+  const add = (v, kind) => { if (!v) return; if (useL) v.lh.forEach(n => ((st[n] ||= {})[kind] = 'L')); if (useR) v.rh.forEach(n => ((st[n] ||= {})[kind] = 'R')); };
+  add(cur, 'cur'); add(nx, 'nx');
+  const isBlack = n => [1, 3, 6, 8, 10].includes(n % 12);
+  const whites = []; for (let n = from; n <= to; n++) if (!isBlack(n)) whites.push(n);
+  const ww = 40, wh = 150, bw = 24, bh = 94, pos = {}; whites.forEach((n, i) => (pos[n] = i * ww));
+  const now = hd => CH_COL[hd], next = hd => CH_COL['N' + hd];
+  const pale = (hd, black) => black ? mix(next(hd), '#ffffff', 0.25) : mix(next(hd), CH_COL.paper, 0.5);
+  let defs = '', body = '', gid = 0;
+  const key = (n, x, w, hgt, black) => {
+    const k = st[n] || {}, r = black ? 4 : 5;
+    let fill = black ? CH_COL.black : CH_COL.paper, frame = '';
+    if (k.cur && k.nx) {
+      const g = 'cg' + gid++;
+      defs += `<linearGradient id="${g}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${now(k.cur)}"/><stop offset="0.42" stop-color="${now(k.cur)}"/><stop offset="1" stop-color="${pale(k.nx, black)}"/></linearGradient>`;
+      fill = `url(#${g})`;
+    } else if (k.cur) fill = now(k.cur);
+    else if (k.nx) fill = pale(k.nx, black);
+    if (k.nx) frame = `<rect x="${x + 2.5}" y="3.5" width="${w - 5}" height="${hgt - 5}" rx="${r}" fill="none" stroke="${next(k.nx)}" stroke-width="3.5"/>`;
+    let o = `<rect x="${x}" y="1" width="${w}" height="${hgt}" rx="${r}" fill="${fill}"${black ? ' stroke="#0e121d"' : ''}/>` + frame;
+    if (k.cur) {
+      const cx = x + w / 2, f = cur.fingers[n], name = cur.names[n] || pcName(n);
+      if (f) o += `<circle cx="${cx}" cy="${hgt - (black ? 36 : 44)}" r="${black ? 10 : 11}" fill="#161b29"/><text x="${cx}" y="${hgt - (black ? 31.5 : 39)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 13 : 14}" font-weight="700" fill="#fff">${f}</text>`;
+      o += `<text x="${cx}" y="${hgt - (black ? 10 : 12)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 12 : 15}" font-weight="600" fill="#161b29">${name}</text>`;
+    }
+    if (n === 60 && !k.cur) o += `<circle cx="${x + w / 2}" cy="${hgt - 14}" r="3" fill="#a3a9bc"/>`;
+    return o;
+  };
+  for (const n of whites) body += key(n, pos[n] + 1, ww - 2, wh, false);
+  for (let n = from; n <= to; n++) if (isBlack(n) && pos[n - 1] != null) body += key(n, pos[n - 1] + ww - bw / 2, bw, bh, true);
+  host.innerHTML = `<svg viewBox="0 0 ${whites.length * ww + 2} ${wh + 2}" role="img" aria-label="Клавиатура"><defs>${defs}</defs>${body}</svg>`;
+}
+
 function chartPage(id) {
   const c = charts.get(id);
   if (!c) { page(h('div', { class: 'empty' }, h('strong', {}, 'Песни нет на этом планшете'), h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
@@ -936,17 +975,17 @@ function chartPage(id) {
 
   /* sticky panel: chord now / next, hands, keyboard, controls */
   const nowEl = h('span', { class: 'ch-now' }), nextEl = h('span', { class: 'ch-next' }), whereEl = h('span', { class: 'ch-where' });
-  const lhEl = h('b'), rhEl = h('b'), kb = h('div', { class: 'kb ch-kb' }), fb = h('div', { class: 'feedback ch-fb' });
-  const lhRow = h('span', {}, h('i', { class: 'dot l' }), 'Левая: ', lhEl), rhRow = h('span', {}, h('i', { class: 'dot r' }), 'Правая: ', rhEl);
-  const btn = (label, on, cls = 'btn') => h('button', { class: cls, onclick: on }, label);
+  const kb = h('div', { class: 'kb ch-kb' }), fb = h('div', { class: 'feedback ch-fb' });
+  const sw = c => h('i', { class: 'sw', style: `background:${c}` });
+  const legend = h('div', { class: 'ch-legend' }, h('span', {}, 'сейчас: ', sw(CH_COL.L), 'левая ', sw(CH_COL.R), 'правая'), h('span', {}, 'дальше: ', sw(CH_COL.NL), 'левая ', sw(CH_COL.NR), 'правая'));
+  const btn = (label, on, cls = 'btn small') => h('button', { class: cls, onclick: on }, label);
   const listenBtn = btn('Послушать', () => (listening ? stopListen() : startListen()));
   let bpm = c.bpm || 72;
   const bpmV = h('span', {}, String(bpm));
   const panel = h('div', { class: 'ch-panel' },
     h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), nowEl, nextEl, whereEl),
-    h('div', { class: 'ch-hands' }, lhRow, rhRow),
-    kb, fb,
-    h('div', { class: 'row ch-ctl' }, btn('← Назад', () => go(runStart(Math.max(0, runStart(pos) - 1)), true)), btn('Дальше →', () => go(runEnd(pos) + 1, true), 'btn primary'), listenBtn,
+    kb, legend, fb,
+    h('div', { class: 'row ch-ctl' }, btn('←', () => go(runStart(Math.max(0, runStart(pos) - 1)), true)), btn('→', () => go(runEnd(pos) + 1, true)), listenBtn,
       h('label', { class: 'ctl' }, 'Темп ', h('input', { type: 'range', min: 50, max: 140, step: 2, value: bpm, oninput: e => { bpm = +e.target.value; bpmV.textContent = bpm; } }), bpmV)));
 
   /* the song's chords as a warm-up strip: tap one to see and drill it without leaving your place */
@@ -978,8 +1017,9 @@ function chartPage(id) {
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Тональность'), h('div', { class: 'row' },
         btn('−', () => { set.tr = Math.max(-11, set.tr - 1); applySettings(); }), trVal, btn('+', () => { set.tr = Math.min(11, set.tr + 1); applySettings(); }))),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Подсказка при ошибке'), seg('hints', [['off', 'Не показывать'], ['on', 'Показывать']])),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Легенда цветов'), seg('legend', [['off', 'Не показывать'], ['on', 'Показывать']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, '«Послушать»: долей на аккорд'), seg('beats', [[2, '2'], [3, '3'], [4, '4']]))),
-    h('p', { class: 'hint' }, 'Играешь аккорд сколько нужно — приложение стоит на нём (название зелёное). Сыграл следующий — переходит дальше; кольца на клавишах показывают, куда идти. «По звучанию» — ноты аккорда в любом порядке, октаве и раскладке, перебором тоже. «По форме» — показанное обращение, клавиши вместе.'),
+    h('p', { class: 'hint' }, 'Яркие клавиши — аккорд, который играешь сейчас (левая бирюзовая, правая фиолетовая), играй его сколько нужно. Бледные с рамкой — следующий по песне (левая голубая, правая оранжевая): взял его — он становится текущим. Другой аккорд не засчитывается; пропустить — A0 или →. «По звучанию» — ноты аккорда в любом порядке, октаве и раскладке, перебором тоже. «По форме» — показанное обращение, клавиши вместе.'),
     h('div', { class: 'row' }, h('a', { class: 'btn quiet', href: `#/chart/${id}/edit`, style: 'text-decoration:none' }, 'Изменить текст')));
 
   /* the sheet: lyrics as pasted, chords as buttons over the words */
@@ -1013,19 +1053,17 @@ function chartPage(id) {
   function render(i, sound) {
     const v = voices[i], nx = drill == null ? voices[runEnd(i) + 1] : null;
     nowEl.textContent = v ? v.sym : (parsed.items[i]?.sym || '') + ' ?';
-    nextEl.textContent = drill != null ? 'разминка' : nx ? 'дальше ' + nx.sym : runEnd(i) + 1 >= parsed.items.length ? 'конец' : '';
-    whereEl.textContent = drill != null ? '' : `${i + 1} из ${parsed.items.length}`;
-    lhEl.textContent = v ? v.lh.map(n => noteName(v, n)).join(' + ') : '—';
-    rhEl.textContent = v ? v.rh.map(n => noteName(v, n)).join(' ') : 'аккорд не разобрал';
-    lhRow.hidden = !useL(); rhRow.hidden = !useR();
-    const hl = {}, fingers = {}, names = {};
-    if (v) {
-      if (useL()) v.lh.forEach(n => { hl[n] = COLORS.left; fingers[n] = v.fingers[n]; names[n] = v.names[n]; });
-      if (useR()) v.rh.forEach(n => { hl[n] = COLORS.right; fingers[n] = v.fingers[n]; names[n] = v.names[n]; });
+    nextEl.innerHTML = '';
+    if (drill != null) nextEl.append(h('span', { class: 'lbl' }, 'разминка'));
+    else {
+      const ahead = []; let j = runEnd(i) + 1;
+      while (j < parsed.items.length && ahead.length < 3) { ahead.push(symAt(j)); j = runEnd(j) + 1; }
+      if (ahead.length) { nextEl.append(h('span', { class: 'lbl' }, 'дальше')); ahead.forEach((a, k) => { if (k) nextEl.append(h('i', {}, '›')); nextEl.append(h('b', { class: k ? '' : 'n1' }, a)); }); }
+      else nextEl.append(h('span', { class: 'lbl' }, 'конец'));
     }
-    const ghost = {};
-    if (nx) { if (useL()) nx.lh.forEach(n => (ghost[n] = COLORS.left)); if (useR()) nx.rh.forEach(n => (ghost[n] = COLORS.right)); }
-    drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names, fingers, ghost });
+    whereEl.textContent = drill != null ? '' : `${i + 1} из ${parsed.items.length}`;
+    drawChordKeyboard(kb, v, nx, { useL: useL(), useR: useR() });
+    legend.hidden = set.legend !== 'on';
     fb.className = 'feedback ch-fb'; fb.textContent = '';
     nowEl.classList.remove('ok');
     if (sound === true && v && !listening) playVoice(v, 1.2);
@@ -1047,8 +1085,8 @@ function chartPage(id) {
   function drawStripIfDrill() { if (strip.querySelector('.ch-chip.on')) drawStrip(); }
   function playVoice(v, dur) { synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; if (useL()) v.lh.forEach(n => synth.play(n, t, dur, 0.3)); if (useR()) v.rh.forEach(n => synth.play(n, t, dur, 0.18)); }
   /* following the player. You stay on a chord as long as you keep playing it (strum it, repeat it, break it up);
-     the moment you play the NEXT chord the app moves there (or two ahead if one was skipped). The current chord turns
-     green when it's recognised. A chord is recognised from what sounds right now: keys held + keys struck in the last
+     the moment you play the NEXT chord of the song the app moves there; any other chord is a miss (skip with A0 / →).
+     The current chord's name turns green when it's recognised. A chord is recognised from what sounds right now: keys held + keys struck in the last
      0.7 s. «По звучанию»: all its notes, in any order, octave or spread; inversions don't matter.
      «По форме»: exactly the shown inversion held together, any octave. */
   const WIN = 700;
@@ -1079,23 +1117,20 @@ function chartPage(id) {
   function judge(note) {
     const now = performance.now(), notes = sounding(now);
     if (drill != null) { nowEl.classList.toggle('ok', matches(voices[drill], notes)); return; }
-    const cur = voices[pos], n1 = runEnd(pos) + 1, n2 = n1 < parsed.items.length ? runEnd(n1) + 1 : -1;
+    const cur = voices[pos], n1 = runEnd(pos) + 1;
     // What counts towards a move: the latest stretch of playing that no longer adds up to the chord you're on
     // (leftovers that are also notes of the new chord are fine). If the next chord uses only notes of this one
-    // (C7 → C) it starts after you let go of all keys. A skip ahead needs keys outside the current chord.
+    // (C7 → C) it starts after you let go of all keys. Only the next chord of the song counts — anything else is a miss.
     const curPcs = cur ? pcsOf(cur) : new Set(), recent = strikes.filter(x => now - x.t < WIN && x.t >= lastMove);
     const held = [...midi.held];
     const tail = () => { const out = []; for (let i = recent.length - 1; i >= 0; i--) { const tryN = [...held, ...out, recent[i].n]; if (cur && bySound(cur, tryN)) break; out.push(recent[i].n); } return [...new Set([...held, ...out])]; };
     const afterRelease = () => lastEmpty > lastMove ? [...new Set([...held, ...recent.filter(x => x.t >= lastEmpty).map(x => x.n)])] : [];
-    const afterLeaving = () => { const dep = recent.find(x => !curPcs.has(x.n % 12))?.t ?? Infinity; return [...new Set([...held, ...recent.filter(x => x.t >= dep).map(x => x.n)])]; };
     const subset = v => [...pcsOf(v)].every(pc => curPcs.has(pc));
     const stillHere = ns => cur && (set.check === 'shape' ? !!byShape(cur) : bySound(cur, ns));
-    for (const idx of [n1, n2]) {
-      const v = voices[idx]; if (!v || !pcsOf(v).has(note % 12)) continue;
-      const ns = idx === n2 ? (subset(v) ? [] : afterLeaving()) : subset(v) ? afterRelease() : tail();
-      if (!ns.length || stillHere(ns)) continue;
-      if (idx === n2 && (v.sym === cur?.sym || matches(voices[n1], ns))) continue;
-      if (matches(v, ns)) return moveTo(idx - pos, now);
+    const v = voices[n1];
+    if (v && pcsOf(v).has(note % 12)) {
+      const ns = subset(v) ? afterRelease() : tail();
+      if (ns.length && !stillHere(ns) && matches(v, ns)) return moveTo(n1 - pos, now);
     }
     if (matches(cur, notes)) { nowEl.classList.add('ok'); fb.className = 'feedback ch-fb'; fb.textContent = ''; return; }
     const nx = voices[runEnd(pos) + 1];
@@ -1126,7 +1161,7 @@ function chartPage(id) {
       if (!listening) return;
       const v = voices[pos], dur = 60 / bpm * set.beats;
       if (v) { const t = synth.ctx.currentTime + 0.03; v.lh.forEach(n => synth.play(n, t, dur, 0.3)); v.rh.forEach(n => synth.play(n, t, dur * 0.9, 0.18)); }
-      lt = setTimeout(() => { if (pos + 1 >= parsed.items.length) return stopListen(); go(pos + 1, 'listen'); step(); }, dur * 1000);
+      lt = setTimeout(() => { const n = runEnd(pos) + 1; if (n >= parsed.items.length) return stopListen(); go(n, 'listen'); step(); }, dur * 1000);
     };
     step();
   }

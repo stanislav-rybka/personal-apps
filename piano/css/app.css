@@ -329,3 +329,15 @@ body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0
 .chip.quiet { min-height: 40px; padding: 6px 12px; color: var(--muted); }
 .songs-head { flex-wrap: wrap; gap: 12px; align-items: center; margin: 4px 0 16px; }
 .search-in { flex: 1; min-width: 200px; padding: 10px 14px; font-size: 16px; }
+
+/* chord page v2: name + chords ahead, one keyboard for now + next, compact controls */
+.ch-now { color: #9b7bf5; }
+.ch-next { display: inline-flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font: 600 22px/1 var(--display); color: var(--paper); }
+.ch-next .lbl { font: 500 16px/1 var(--body); color: var(--muted); }
+.ch-next b { font-weight: 600; } .ch-next b.n1 { color: #f2a541; } .ch-next i { font-style: normal; color: var(--muted); font-size: 16px; }
+.ch-legend { display: flex; gap: 22px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.ch-legend[hidden] { display: none; }
+.ch-legend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin: 0 4px 0 8px; vertical-align: -1px; }
+.ch-fb:empty { display: none; }
+.ch-ctl .btn.small { min-height: 36px; padding: 4px 14px; font-size: 15px; }
+.ch-ctl { gap: 6px; }
