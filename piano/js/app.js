@@ -958,7 +958,9 @@ function drawChordKeyboard(host, cur, nx, { useL = true, useR = true, from = 36,
       if (f) o += `<circle cx="${cx}" cy="${hgt - (black ? 36 : 44)}" r="${(black ? 10 : 11) + (isHeld ? 3 : 0)}" fill="${heldCol || '#161b29'}" stroke="#161b29" stroke-width="${isHeld ? 2.5 : 0}"/><text x="${cx}" y="${hgt - (black ? 31.5 : 39)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 13 : 14}" font-weight="700" fill="#fff">${f}</text>`;
       o += `<text x="${cx}" y="${hgt - (black ? 10 : 12)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 12 : 15}" font-weight="600" fill="#161b29">${name}</text>`;
     }
-    if (n === 60 && !k.cur) o += `<circle cx="${x + w / 2}" cy="${hgt - 14}" r="3" fill="#a3a9bc"/>`;
+    // keys of the next chord get their note name too (no finger: that's for the chord you're playing)
+    if (k.nx && !k.cur && nx) o += `<text x="${x + w / 2}" y="${hgt - (black ? 10 : 12)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 12 : 15}" font-weight="600" fill="${mix(next(k.nx), '#161b29', 0.55)}">${nx.names[n] || pcName(n)}</text>`;
+    if (n === 60 && !k.cur && !k.nx) o += `<circle cx="${x + w / 2}" cy="${hgt - 14}" r="3" fill="#a3a9bc"/>`;
     if (isHeld && !(k.cur && cur.fingers[n])) o += `<circle cx="${x + w / 2}" cy="${hgt - (black ? 36 : 44)}" r="${black ? 12 : 13}" fill="${heldCol}" stroke="#161b29" stroke-width="2.5"/>`;
     return o;
   };
