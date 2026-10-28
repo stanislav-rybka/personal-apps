@@ -192,9 +192,14 @@ async function initMidi(manual) {
     if (manual) toast(midi.access.inputs.size ? 'MIDI подключён' : 'Пианино не видно — подключи его в MIDI BLE Connect');
   } catch (e) { if (manual) toast('MIDI: доступ не дали'); }
 }
+const lastOn = {};
 function onMidi(ev) {
   const [st, n, vel] = ev.data, type = st & 0xf0;
-  if (type === 0x90 && vel > 0) { midi.held.add(n); $('#lastNote').textContent = midiName(n); midi.listener?.({ on: true, note: n }); }
+  if (type === 0x90 && vel > 0) {
+    // the same key arriving twice within a few ms is one press seen through two inputs, not a re-strike
+    const now = performance.now(); if (now - (lastOn[n] || -1e9) < 40) return; lastOn[n] = now;
+    midi.held.add(n); $('#lastNote').textContent = midiName(n); midi.listener?.({ on: true, note: n });
+  }
   else if (type === 0x80 || (type === 0x90 && vel === 0)) { midi.held.delete(n); midi.listener?.({ on: false, note: n }); }
 }
 
@@ -1018,8 +1023,9 @@ function chartPage(id) {
     }
     drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names, fingers });
     fb.className = 'feedback ch-fb'; fb.textContent = '';
-    acc = new Set(); accLow = null; lock = false;
+    fresh = new Set();
     if (sound === true && v && !listening) playVoice(v, 1.2);
+    if (sound !== 'listen') setTimeout(checkNow, 0);
   }
   function go(i, sound) {
     if (!parsed.items.length) return;
@@ -1036,42 +1042,59 @@ function chartPage(id) {
   }
   function drawStripIfDrill() { if (strip.querySelector('.ch-chip.on')) drawStrip(); }
   function playVoice(v, dur) { synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; if (useL()) v.lh.forEach(n => synth.play(n, t, dur, 0.3)); if (useR()) v.rh.forEach(n => synth.play(n, t, dur, 0.18)); }
+  // a pass moves on at once (no dead window that swallowed the next chord's first notes, usually the bass)
+  let prevPcs = new Set(), passT = -1e9;
   function passed(played) {
-    if (lock) return; lock = true; // one pass per chord, extra keys during the hand-over don't skip the next one
     nowEl.classList.add('ok'); setTimeout(() => nowEl.classList.remove('ok'), 260);
-    if (drill != null) { acc = new Set(); accLow = null; setTimeout(() => (lock = false), 160); return; }
-    const v = voices[pos];
+    const v = voices[drill ?? pos];
+    prevPcs = new Set([...(v?.lh || []), ...(v?.rh || [])].map(n => n % 12)); passT = performance.now();
+    if (drill != null) { fresh = new Set(); return; }
     if (played && set.rh === 'near' && useR() && played.rh[0] !== v.rh[0]) voices = voices.slice(0, pos + 1).concat(voiceAll(parsed.items.slice(pos + 1), set, played));
-    setTimeout(() => go(pos + 1, false), 160);
+    go(pos + 1, false);
   }
   function missed(text) { if (set.hints === 'on') { fb.className = 'feedback bad ch-fb'; fb.textContent = text; } }
 
-  /* checking. «По звучанию»: notes played since the chord came up are collected (order, octave, spread and
-     arpeggio don't matter); pass when every needed note has sounded and the lowest played is the bass.
+  /* checking. «По звучанию»: what counts is everything struck since the chord came up plus every key still held
+     (a common tone kept down from the previous chord counts). Order, octave, spread, arpeggio don't matter; the lowest
+     chord note sounding must be the bass. Checked on key down and key up (letting go of the old bass completes it).
      «По форме»: the shown voicing held together, any octave (lowest = bass, then the right hand bottom→top). */
-  let timer = null, acc = new Set(), accLow = null, lock = false;
+  let timer = null, fresh = new Set();
   const target = () => voices[drill ?? pos];
   const ctrl = {
     onMidi(e) {
+      if (e.on && e.note === 21) { go(pos + 1, false); return; }
+      if (e.on && e.note === 23) { go(pos - 1, false); return; }
+      const v = target(); if (!v) return;
+      if (e.on) {
+        // a trailing key of the chord just passed (within 80 ms) belongs to that chord
+        if (!(performance.now() - passT < 80 && prevPcs.has(e.note % 12))) fresh.add(e.note);
+      }
+      if (set.check === 'sound') { soundCheck(v, e.on); return; }
       if (!e.on) return;
-      if (e.note === 21) { go(pos + 1, false); return; }
-      if (e.note === 23) { go(pos - 1, false); return; }
-      const v = target(); if (!v || lock) return;
-      if (set.check === 'sound') { soundCheck(v, e.note); return; }
       clearTimeout(timer);
       const need = (useL() ? v.lh.length : 0) + (useR() ? v.rh.length : 0);
       if (midi.held.size >= need) timer = setTimeout(shapeCheck, 140);
     },
     stop() { clearTimeout(timer); stopListen(); }
   };
-  function soundCheck(v, note) {
+  // a new chord may already be complete in the hands (held through the change)
+  function checkNow() {
+    const v = target(); if (!v) return;
+    if (set.check === 'sound') soundCheck(v, false);
+    else { clearTimeout(timer); if (midi.held.size >= (useL() ? v.lh.length : 0) + (useR() ? v.rh.length : 0)) timer = setTimeout(shapeCheck, 140); }
+  }
+  function soundCheck(v, struck) {
     const need = new Set([...(useL() ? v.lh : []), ...(useR() ? v.rh : [])].map(n => n % 12));
-    acc.add(note % 12); if (need.has(note % 12) && (accLow == null || note < accLow)) accLow = note; // a stray low key doesn't spoil the bass
-    const bassOk = !useL() || accLow % 12 === v.lh[0] % 12;
-    if ([...need].every(pc => acc.has(pc)) && bassOk) return passed(null);
-    const stray = [...acc].filter(pc => !need.has(pc));
+    const sounding = [...new Set([...fresh, ...midi.held])];
+    const pcs = new Set(sounding.map(n => n % 12));
+    const chordNotes = sounding.filter(n => need.has(n % 12)).sort((a, b) => a - b);
+    const bassOk = !useL() || (chordNotes.length && chordNotes[0] % 12 === v.lh[0] % 12);
+    const all = [...need].every(pc => pcs.has(pc)), struckOne = [...fresh].some(n => need.has(n % 12));
+    if (all && bassOk && struckOne) return passed(null);
+    if (!struck) return;
+    const stray = [...new Set([...fresh].map(n => n % 12))].filter(pc => !need.has(pc));
     if (stray.length) missed(`Лишние ноты: ${stray.map(pcName).join(' ')}. Нужно: ${[...need].map(pcName).join(' ')}${useL() ? `, бас ${pcName(v.lh[0])} ниже всех` : ''}`);
-    else if (!bassOk && [...need].every(pc => acc.has(pc))) missed(`Все ноты есть, но ниже всех должен быть бас ${pcName(v.lh[0])}`);
+    else if (all && !bassOk) missed(`Все ноты есть, но ниже всех должен быть бас ${pcName(v.lh[0])}`);
   }
   function shapeCheck() {
     const v = target(); if (!v) return;
@@ -1080,7 +1103,7 @@ function chartPage(id) {
     const pcs = a => a.map(n => n % 12).join(',');
     const ok = got.length === lh.length + rh.length && pcs(got.slice(0, nL)) === pcs(lh) && pcs(got.slice(nL)) === pcs(rh)
       && (!nL || !rh.length || got[nL - 1] < got[nL]) && (!rh.length || got[got.length - 1] - got[nL] <= 12);
-    if (ok) return passed({ rh: got.slice(nL), lh: got.slice(0, nL).length ? got.slice(0, nL) : v.lh });
+    if (ok && [...fresh].some(n => got.includes(n))) return passed({ rh: got.slice(nL), lh: got.slice(0, nL).length ? got.slice(0, nL) : v.lh });
     const nm = n => v.names[n] || pcName(n);
     missed(`Сыграл ${got.map(midiName).join(' ')} — нужно${lh.length ? ': бас ' + lh.map(nm).join(' + ') : ''}${rh.length ? (lh.length ? ', правая ' : ': правая ') + rh.map(nm).join(' ') + ' снизу вверх' : ''} (октава любая)`);
   }
