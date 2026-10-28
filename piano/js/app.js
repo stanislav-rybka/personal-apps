@@ -808,7 +808,7 @@ function parseSheet(text) {
 }
 
 // voicing: right hand three notes (root position or nearest to the previous chord), left hand bass (+ fifth)
-const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4, check: 'sound', hints: 'off', hands: 'both', legend: 'off' };
+const CH_SET_DEFAULT = { rh: 'root', lh: 'bass', sev: 'keep', tr: 0, beats: 4, check: 'sound', hints: 'off', hands: 'both', legend: 'off', mode: 'study' };
 function chordTones(p, sev) {
   const iv = (sev === 'triad' ? CH_TRIAD(p.q) : (CH_Q[p.q] || CH_TRIAD(p.q))).map(x => x % 12);
   const uniq = [...new Set(iv)];
@@ -830,7 +830,7 @@ function voiceChord(sym, set, prev) {
   if (set.lh === 'bass5') {
     const fifthIv = /^(dim|o|m7b5)/.test(p.q) ? 6 : /^(aug|\+)/.test(p.q) ? 8 : 7;
     lh.push(p.bass === p.root ? b + fifthIv : (() => { let n = b + 1; while (n % 12 !== p.root) n++; return n; })());
-  }
+  } else if (set.lh === 'bass8') lh.push(b + 12);
   // right hand: close three-note voicings, every rotation, always above the left hand (one key can't be in both hands)
   const pcs = iv.map(x => (p.root + x) % 12), cands = [], low = Math.max(52, lh[lh.length - 1] + 1);
   for (let r = 0; r < 3; r++) {
@@ -845,7 +845,8 @@ function voiceChord(sym, set, prev) {
   // default octave: lowest right-hand note closest to A3 (around middle C, clear of the left hand)
   const centre = c => Math.abs(c.v[0] - 57);
   let rh;
-  if (set.rh === 'near' && prev) {
+  if (set.inv != null && cands.some(c => c.r === set.inv)) rh = cands.filter(c => c.r === set.inv).sort((a, b) => centre(a) - centre(b))[0].v;
+  else if (set.rh === 'near' && prev) {
     const cost = c => c.v.reduce((a, n, i) => a + Math.abs(n - prev.rh[i]), 0);
     rh = cands.slice().sort((a, b) => cost(a) - cost(b) || centre(a) - centre(b))[0].v;
   } else rh = (rootFirst.length ? rootFirst : cands).slice().sort((a, b) => centre(a) - centre(b))[0].v;
@@ -854,8 +855,9 @@ function voiceChord(sym, set, prev) {
   if (lh[1]) fingers[lh[1]] = 1;
   const names = {};
   for (const n of rh) names[n] = label(n);
-  names[lh[0]] = chName(p.bass, LET.indexOf(p.bassL)); if (lh[1]) names[lh[1]] = label(lh[1]);
-  return { sym, lh, rh, fingers, names };
+  names[lh[0]] = chName(p.bass, LET.indexOf(p.bassL)); if (lh[1]) names[lh[1]] = lh[1] - lh[0] === 12 ? names[lh[0]] : label(lh[1]);
+  // which inversion the right hand is in: 0 = the order the chord tones were listed in (root position when the root is there)
+  return { sym, lh, rh, fingers, names, inv: pcs.indexOf(rh[0] % 12), rot: pcs.length };
 }
 function voiceAll(items, set, prev = null) {
   return items.map(it => { const v = voiceChord(chTranspose(it.sym, set.tr), set, prev); if (v) prev = v; return v; });
@@ -925,7 +927,7 @@ function chartEditPage(id) {
 // Chord-sheet keyboard. Now: left teal, right violet, solid, with fingers and names. Next: left blue, right orange,
 // pale fill with a frame of its colour. A key in both: flows from the current colour (top) into the next one's (bottom).
 const CH_COL = { L: '#2fb5a3', R: '#9b7bf5', NL: '#5aaef0', NR: '#f2a541', paper: '#f1f2f6', black: '#1b2030' };
-function drawChordKeyboard(host, cur, nx, { useL = true, useR = true, from = 36, to = 72 } = {}) {
+function drawChordKeyboard(host, cur, nx, { useL = true, useR = true, from = 36, to = 72, held = null } = {}) {
   const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
   const mix = (a, b, t) => { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v * (1 - t) + y[i] * t).toString(16).padStart(2, '0')).join(''); };
   const st = {};
@@ -948,12 +950,16 @@ function drawChordKeyboard(host, cur, nx, { useL = true, useR = true, from = 36,
     else if (k.nx) fill = pale(k.nx, black);
     if (k.nx) frame = `<rect x="${x + 2.5}" y="3.5" width="${w - 5}" height="${hgt - 5}" rx="${r}" fill="none" stroke="${next(k.nx)}" stroke-width="3.5"/>`;
     let o = `<rect x="${x}" y="1" width="${w}" height="${hgt}" rx="${r}" fill="${fill}"${black ? ' stroke="#0e121d"' : ''}/>` + frame;
+    // a key you hold: its finger circle turns green (the shown key), amber (right note, another octave) or red (not in the chord)
+    const isHeld = held && held.has(n);
+    const heldCol = isHeld ? (k.cur ? '#2fbf5f' : cur && [...(useL ? cur.lh : []), ...(useR ? cur.rh : [])].some(m => m % 12 === n % 12) ? '#e0a514' : '#e5484d') : null;
     if (k.cur) {
       const cx = x + w / 2, f = cur.fingers[n], name = cur.names[n] || pcName(n);
-      if (f) o += `<circle cx="${cx}" cy="${hgt - (black ? 36 : 44)}" r="${black ? 10 : 11}" fill="#161b29"/><text x="${cx}" y="${hgt - (black ? 31.5 : 39)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 13 : 14}" font-weight="700" fill="#fff">${f}</text>`;
+      if (f) o += `<circle cx="${cx}" cy="${hgt - (black ? 36 : 44)}" r="${(black ? 10 : 11) + (isHeld ? 3 : 0)}" fill="${heldCol || '#161b29'}" stroke="#161b29" stroke-width="${isHeld ? 2.5 : 0}"/><text x="${cx}" y="${hgt - (black ? 31.5 : 39)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 13 : 14}" font-weight="700" fill="#fff">${f}</text>`;
       o += `<text x="${cx}" y="${hgt - (black ? 10 : 12)}" text-anchor="middle" font-family="Golos Text" font-size="${black ? 12 : 15}" font-weight="600" fill="#161b29">${name}</text>`;
     }
     if (n === 60 && !k.cur) o += `<circle cx="${x + w / 2}" cy="${hgt - 14}" r="3" fill="#a3a9bc"/>`;
+    if (isHeld && !(k.cur && cur.fingers[n])) o += `<circle cx="${x + w / 2}" cy="${hgt - (black ? 36 : 44)}" r="${black ? 12 : 13}" fill="${heldCol}" stroke="#161b29" stroke-width="2.5"/>`;
     return o;
   };
   for (const n of whites) body += key(n, pos[n] + 1, ww - 2, wh, false);
@@ -965,6 +971,9 @@ function chartPage(id) {
   const c = charts.get(id);
   if (!c) { page(h('div', { class: 'empty' }, h('strong', {}, 'Песни нет на этом планшете'), h('p', {}, h('a', { href: '#/songs' }, 'К списку песен')))); return; }
   const set = { ...CH_SET_DEFAULT, ...(c.set || {}) };
+  if (set.mode !== 'play' && !chartPage.forcePlay) { location.replace(`#/chart/${encodeURIComponent(id)}/study`); return; }
+  chartPage.forcePlay = false;
+  if (set.mode !== 'play') { set.mode = 'play'; charts.put({ ...c, set }); }
   const parsed = parseSheet(c.text);
   let voices = voiceAll(parsed.items, set), pos = Math.min(c.pos || 0, parsed.items.length - 1);
   let drill = null; // index of a chord being warmed up from the list (the song position stays put)
@@ -983,7 +992,7 @@ function chartPage(id) {
   let bpm = c.bpm || 72;
   const bpmV = h('span', {}, String(bpm));
   const panel = h('div', { class: 'ch-panel' },
-    h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), nowEl, nextEl, whereEl),
+    h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), nowEl, nextEl, whereEl, modeSwitch(id, 'play')),
     kb, legend, fb,
     h('div', { class: 'row ch-ctl' }, btn('←', () => go(runStart(Math.max(0, runStart(pos) - 1)), true)), btn('→', () => go(runEnd(pos) + 1, true)), listenBtn,
       h('label', { class: 'ctl' }, 'Темп ', h('input', { type: 'range', min: 50, max: 140, step: 2, value: bpm, oninput: e => { bpm = +e.target.value; bpmV.textContent = bpm; } }), bpmV)));
@@ -1012,7 +1021,7 @@ function chartPage(id) {
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Проверка'), seg('check', [['sound', 'По звучанию'], ['shape', 'По форме']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Руки'), seg('hands', [['both', 'Обе'], ['R', 'Правая'], ['L', 'Левая']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Правая рука'), seg('rh', [['root', 'Основной вид'], ['near', 'Ближайшая форма']])),
-      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Левая рука'), seg('lh', [['bass', 'Только бас'], ['bass5', 'Бас + квинта']])),
+      h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Левая рука'), seg('lh', [['bass', 'Только бас'], ['bass5', 'Бас + квинта'], ['bass8', 'Бас + октава']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Септаккорды'), seg('sev', [['keep', 'Как в шпаргалке'], ['triad', 'Упростить']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Тональность'), h('div', { class: 'row' },
         btn('−', () => { set.tr = Math.max(-11, set.tr - 1); applySettings(); }), trVal, btn('+', () => { set.tr = Math.min(11, set.tr + 1); applySettings(); }))),
@@ -1167,7 +1176,7 @@ function chartPage(id) {
   }
   function stopListen() { listening = false; clearTimeout(lt); synth.silence(); listenBtn.textContent = 'Послушать'; }
 
-  p.append(panel, strip, settings, h('div', { class: 'ch-sheet-wrap' }, sheet));
+  p.append(panel, settings, h('div', { class: 'ch-sheet-wrap' }, sheet));
   // the panel sticks right under the top bar
   const pin = () => { panel.style.top = ($('.topbar')?.offsetHeight || 0) + 'px'; };
   pin(); window.addEventListener('resize', pin);
@@ -1176,9 +1185,149 @@ function chartPage(id) {
   activate(ctrl);
   applySettings(); go(pos, false);
   keepAwake();
-  const cleanup = () => { stopListen(); clearTimeout(ctrl.t); window.removeEventListener('resize', pin); c.bpm = bpm; charts.put({ ...charts.get(id), set, pos, bpm }); window.removeEventListener('hashchange', cleanup); };
+  const cleanup = () => { stopListen(); clearTimeout(ctrl.t); window.removeEventListener('resize', pin); charts.put({ ...charts.get(id), pos, bpm }); window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
   if (window.__klavishi) Object.assign(window.__klavishi, { chart: { parsed, get voices() { return voices; }, get pos() { return pos; }, get drill() { return drill; }, set } });
+}
+
+// «Разучить аккорды | Играть песню» — the same song in two modes; the choice is remembered per song
+function modeSwitch(id, mode) {
+  const go = m => { if (m === mode) return; if (m === 'play') chartPage.forcePlay = true; location.hash = `#/chart/${encodeURIComponent(id)}${m === 'study' ? '/study' : ''}`; };
+  return h('div', { class: 'seg small mode-sw' },
+    h('button', { class: 'seg-b' + (mode === 'study' ? ' on' : ''), onclick: () => go('study') }, 'Разучить'),
+    h('button', { class: 'seg-b' + (mode === 'play' ? ' on' : ''), onclick: () => go('play') }, 'Играть'));
+}
+// held keys vs a chord. «форма»: lowest key(s) = the left hand, then the right hand bottom→top, any octave.
+// «звучание»: every note of the chord is held (any order, octave, spread).
+function chordHeld(v, held, { useL = true, useR = true, shape = true } = {}) {
+  if (!v) return false;
+  const lh = useL ? v.lh : [], rh = useR ? v.rh : [], got = [...held].sort((a, b) => a - b);
+  if (!shape) { const have = new Set(got.map(n => n % 12)); return [...lh, ...rh].every(n => have.has(n % 12)); }
+  const nL = lh.length, pcs = a => a.map(n => n % 12).join(',');
+  return got.length === lh.length + rh.length && pcs(got.slice(0, nL)) === pcs(lh) && pcs(got.slice(nL)) === pcs(rh)
+    && (!nL || !rh.length || got[nL - 1] < got[nL]) && (!rh.length || got[got.length - 1] - got[nL] <= 12);
+}
+// how far the hands travel from chord a to chord b: right-hand keys moved (semitones, note by note), the bass move
+// counted at half, plus every key that has to be newly found; black keys among those count extra
+function moveCost(a, b) {
+  const ra = a.rh.slice().sort((x, y) => x - y), rb = b.rh.slice().sort((x, y) => x - y);
+  const rh = rb.reduce((t, n, i) => t + Math.abs(n - (ra[i] ?? n)), 0), lh = Math.abs(a.lh[0] - b.lh[0]) / 2;
+  const fresh = [...b.lh, ...b.rh].filter(n => !a.lh.includes(n) && !a.rh.includes(n));
+  return rh + lh + fresh.length * 1.5 + fresh.filter(n => [1, 3, 6, 8, 10].includes(n % 12)).length;
+}
+
+function chartStudy(id) {
+  const c = charts.get(id);
+  if (!c) { location.hash = '#/songs'; return; }
+  const set = { ...CH_SET_DEFAULT, ...(c.set || {}), mode: 'study' };
+  const st = { tab: 'chords', sel: null, pair: null, inv: {}, lhv: {}, learned: {}, done: {}, ...(c.study || {}) };
+  const save = () => charts.put({ ...charts.get(id), set, study: st });
+  save();
+  const parsed = parseSheet(c.text), song = voiceAll(parsed.items, set);
+  const useL = set.hands !== 'R', useR = set.hands !== 'L', opts = { useL, useR };
+  const syms = [...new Set(song.filter(Boolean).map(v => v.sym))];
+  if (!syms.includes(st.sel)) st.sel = syms.find(x => (st.learned[x] || 0) < 3) || syms[0];
+  // chord sequence with repeats collapsed, and every distinct change in it
+  const seq = []; song.forEach(v => { if (v && seq[seq.length - 1]?.sym !== v.sym) seq.push(v); });
+  const pairs = new Map();
+  // a pair is drilled back and forth, so B7→C7 and C7→B7 are one pair
+  for (let i = 1; i < seq.length; i++) { const a = seq[i - 1], b = seq[i], k = [a.sym, b.sym].sort().join('⇄'); if (!pairs.has(k)) pairs.set(k, { k, a, b, count: 0 }); pairs.get(k).count++; }
+  const plist = [...pairs.values()].map(x => ({ ...x, cost: Math.max(moveCost(x.a, x.b), moveCost(x.b, x.a)) })).sort((x, y) => y.cost - x.cost);
+  // ~semitones of hand travel plus keys to find: under 10 — a small shift, 17+ — the hand jumps and most keys change
+  const level = x => x.cost >= 17 ? ['трудный', 'hard'] : x.cost >= 10 ? ['средний', 'mid'] : ['лёгкий', 'easy'];
+  if (st.pair && !pairs.has(st.pair)) st.pair = null;
+
+  const p = page(); p.classList.add('chart-page', 'study-page');
+  const head = h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), h('span', { class: 'st-title' }, c.title), modeSwitch(id, 'study'));
+  const tabs = h('div', { class: 'seg small st-tabs' },
+    h('button', { class: 'seg-b' + (st.tab === 'chords' ? ' on' : ''), onclick: () => { st.tab = 'chords'; save(); chartStudy(id); } }, 'Аккорды'),
+    h('button', { class: 'seg-b' + (st.tab === 'pairs' ? ' on' : ''), onclick: () => { st.tab = 'pairs'; save(); chartStudy(id); } }, 'Переходы'));
+  p.append(head, tabs);
+  const kb = h('div', { class: 'kb ch-kb' }), fb = h('div', { class: 'feedback ch-fb' });
+  const sound = v => { if (!v) return; synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; if (useL) v.lh.forEach(n => synth.play(n, t, 1.4, 0.3)); if (useR) v.rh.forEach(n => synth.play(n, t, 1.4, 0.18)); };
+  let ctrl = { onMidi() {}, stop() {} };
+  activate(null); midi.held.clear();
+
+  if (st.tab === 'chords') {
+    // a chord's variants: every inversion of the right hand; the left hand as bass / bass + fifth / bass + octave
+    const lhv = st.lhv[st.sel] || set.lh;
+    const variants = []; const seen = new Set();
+    for (let r = 0; r < 3; r++) { const v = voiceChord(st.sel, { ...set, lh: lhv, inv: r, tr: 0 }, null); if (v && !seen.has(v.rh.join())) { seen.add(v.rh.join()); variants.push(v); } }
+    const inSong = new Set(song.filter(v => v && v.sym === st.sel).map(v => v.inv));
+    const invSel = variants.some(v => v.inv === st.inv[st.sel]) ? st.inv[st.sel] : (song.find(v => v && v.sym === st.sel)?.inv ?? variants[0]?.inv);
+    const v = variants.find(x => x.inv === invSel) || variants[0];
+    const learnedN = syms.filter(x => (st.learned[x] || 0) >= 3).length;
+    const chips = h('div', { class: 'st-chips' }, syms.map(x => h('button', { class: 'chip ch-chip' + (x === st.sel ? ' on' : '') + ((st.learned[x] || 0) >= 3 ? ' done' : ''), onclick: () => { st.sel = x; save(); chartStudy(id); } }, x, (st.learned[x] || 0) >= 3 ? h('span', { class: 'tick' }, '✓') : null)));
+    const nameEl = h('span', { class: 'ch-now' }, v?.sym || st.sel), countEl = h('span', { class: 'st-count' });
+    const showCount = () => { const n = Math.min(3, st.learned[st.sel] || 0); countEl.textContent = n >= 3 ? 'разучен ✓' : `верно ${n} из 3`; };
+    const nm = n => v.names[n] || pcName(n);
+    const invRow = h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Правая рука'), h('div', { class: 'seg' }, variants.map(x => h('button', { class: 'seg-b' + (x === v ? ' on' : ''), onclick: () => { st.inv[st.sel] = x.inv; save(); chartStudy(id); } },
+      x.rh.map(n => x.names[n]).join(' '), inSong.has(x.inv) ? h('span', { class: 'in-song', title: 'так в песне' }, '•') : null))));
+    const lhRow = h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Левая рука'), h('div', { class: 'seg' }, [['bass', 'Бас'], ['bass5', 'Бас + квинта'], ['bass8', 'Бас + октава']].map(([k, label]) =>
+      h('button', { class: 'seg-b' + (lhv === k ? ' on' : ''), onclick: () => { st.lhv[st.sel] = k; save(); chartStudy(id); } }, label))));
+    const i = syms.indexOf(st.sel), step = d => { st.sel = syms[(i + d + syms.length) % syms.length]; save(); chartStudy(id); };
+    p.append(h('div', { class: 'ch-panel' },
+      h('div', { class: 'ch-top' }, nameEl, countEl, h('span', { class: 'ch-where' }, `разучено ${learnedN} из ${syms.length}`)),
+      kb, fb,
+      h('div', { class: 'row ch-ctl' }, h('button', { class: 'btn small', onclick: () => step(-1) }, '←'), h('button', { class: 'btn small', onclick: () => step(1) }, '→'), h('button', { class: 'btn small', onclick: () => sound(v) }, 'Послушать'))),
+      chips, h('div', { class: 'setup-grid st-vars' }, invRow, lhRow),
+      h('p', { class: 'hint' }, 'Нажми аккорд и держи: зелёная точка — клавиша верная, жёлтая — нота верная, но в другой октаве, красная — лишняя. Три раза верно — аккорд разучен. Точка у варианта правой руки — так он звучит в этой песне.'));
+    const draw = () => drawChordKeyboard(kb, v, null, { ...opts, held: midi.held });
+    let was = false, t = null;
+    ctrl = {
+      onMidi(e) {
+        clearTimeout(t); t = setTimeout(() => {
+          draw();
+          const ok = chordHeld(v, midi.held, { ...opts, shape: true });
+          if (ok && !was) { st.learned[st.sel] = (st.learned[st.sel] || 0) + 1; save(); showCount(); nameEl.classList.add('ok'); fb.className = 'feedback ok ch-fb'; fb.textContent = 'Верно'; }
+          if (!ok && was) { nameEl.classList.remove('ok'); fb.textContent = ''; }
+          was = ok;
+        }, 50);
+      },
+      stop() { clearTimeout(t); }
+    };
+    showCount(); draw();
+  } else {
+    // transitions: every change in the song, hardest first; drill one back and forth
+    if (!plist.length) p.append(h('div', { class: 'empty' }, h('strong', {}, 'Переходов нет'), 'В песне один аккорд.'));
+    const cur = plist.find(x => x.k === st.pair) || null;
+    if (cur) {
+      let target = cur.a, other = cur.b, n = 0;
+      const nameEl = h('span', { class: 'ch-now' }), nextEl = h('span', { class: 'ch-next' }), countEl = h('span', { class: 'st-count' });
+      const show = () => {
+        nameEl.textContent = target.sym; nextEl.innerHTML = ''; nextEl.append(h('span', { class: 'lbl' }, 'дальше'), h('b', { class: 'n1' }, other.sym));
+        const d = st.done[cur.k] >= 6; countEl.textContent = d ? 'разучен ✓' : `смен ${Math.min(6, st.done[cur.k] || 0)} из 6`;
+        drawChordKeyboard(kb, target, other, { ...opts, held: midi.held });
+      };
+      p.append(h('div', { class: 'ch-panel' },
+        h('div', { class: 'ch-top' }, nameEl, nextEl, countEl),
+        kb, fb,
+        h('div', { class: 'row ch-ctl' }, h('button', { class: 'btn small', onclick: () => { st.pair = null; save(); chartStudy(id); } }, '← к списку'), h('button', { class: 'btn small', onclick: () => { sound(cur.a); setTimeout(() => sound(cur.b), 900); } }, 'Послушать'))));
+      p.append(h('p', { class: 'hint' }, `Играй ${cur.a.sym}, потом ${cur.b.sym}, и снова ${cur.a.sym} — туда и обратно. Яркое — что играть сейчас, бледное — куда дальше. Шесть смен — переход разучен.`));
+      let t = null, was = false;
+      ctrl = {
+        onMidi() {
+          clearTimeout(t); t = setTimeout(() => {
+            const ok = chordHeld(target, midi.held, { ...opts, shape: set.check === 'shape' });
+            if (ok && !was) { n++; if (n > 1) { st.done[cur.k] = (st.done[cur.k] || 0) + 1; save(); } [target, other] = [other, target]; }
+            was = ok && false; show();
+          }, 50);
+        },
+        stop() { clearTimeout(t); }
+      };
+      show();
+    }
+    p.append(h('ul', { class: 'lesson-list pair-list' }, plist.map(x => {
+      const [lv, cls] = level(x), done = (st.done[x.k] || 0) >= 6;
+      return h('li', {}, h('button', { class: 'lesson-row' + (x.k === st.pair ? ' on' : ''), onclick: () => { st.pair = x.k; save(); chartStudy(id); } },
+        h('div', { class: 't pair-name' }, x.a.sym, h('i', {}, ' ⇄ '), x.b.sym),
+        h('div', { class: 'g' }, `в песне ${x.count} раз${x.count % 10 >= 2 && x.count % 10 <= 4 && (x.count % 100 < 12 || x.count % 100 > 14) ? 'а' : ''}`),
+        h('span', { class: 'state lvl-' + cls + (done ? ' done' : '') }, done ? 'разучен ✓' : lv)));
+    })));
+  }
+  activate(ctrl);
+  keepAwake();
+  if (window.__klavishi) Object.assign(window.__klavishi, { study: { st, syms, plist } });
 }
 
 /* ---------------- songs: list + MIDI player ---------------- */
@@ -1947,6 +2096,7 @@ function route() {
   if (sec === 'song' && arg) return songPage(decodeURIComponent(arg));
   if (sec === 'chart' && arg === 'new') return chartEditPage(null);
   if (sec === 'chart' && arg && rest === 'edit') return chartEditPage(decodeURIComponent(arg));
+  if (sec === 'chart' && arg && rest === 'study') return chartStudy(decodeURIComponent(arg));
   if (sec === 'chart' && arg) return chartPage(decodeURIComponent(arg));
   if (sec === 'settings') return settingsPage();
   return theoryPage();

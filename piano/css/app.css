@@ -341,3 +341,21 @@ body.playing .strip { position: fixed; z-index: 39; left: 0; right: 0; margin: 0
 .ch-fb:empty { display: none; }
 .ch-ctl .btn.small { min-height: 36px; padding: 4px 14px; font-size: 15px; }
 .ch-ctl { gap: 6px; }
+
+/* study mode */
+.mode-sw { margin-left: auto; } .ch-top .mode-sw + * { margin-left: 0; }
+.st-title { font: 600 20px/1.2 var(--display); color: var(--paper); }
+.st-tabs { margin: 10px 0 4px; }
+.st-count { color: var(--muted); font-size: 15px; }
+.st-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 6px; }
+.ch-chip.done { border-color: var(--ok); }
+.ch-chip .tick { color: var(--ok); margin-left: 6px; font-size: 14px; }
+.st-vars { margin-top: 10px; }
+.in-song { color: #f2a541; font-size: 22px; line-height: 0; margin-left: 6px; }
+.pair-list { margin-top: 14px; }
+.pair-list .lesson-row { width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; grid-template-columns: 1fr auto auto; }
+.pair-list .lesson-row.on { border-color: #9b7bf5; }
+.pair-name { font-family: var(--display); } .pair-name i { color: var(--muted); font-style: normal; }
+.state.lvl-hard { color: #ef6f6c; border-color: #ef6f6c; } .state.lvl-mid { color: #f2a541; border-color: #f2a541; } .state.lvl-easy { color: var(--muted); }
+.state.done { color: var(--ok); border-color: var(--ok); }
+.study-page .ch-panel { position: static; border-bottom: 0; }
