@@ -120,7 +120,7 @@ function drawStaff(host, { clef = 'auto', events = [], labels = false, colors = 
 }
 
 /* ---------------- keyboard (SVG) ---------------- */
-function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = false, names = {}, fingers = {} } = {}) {
+function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = false, names = {}, fingers = {}, ghost = {} } = {}) {
   const a = parseNote(from).midi, b = parseNote(to).midi;
   const isBlack = n => [1, 3, 6, 8, 10].includes(n % 12);
   const whites = []; for (let n = a; n <= b; n++) if (!isBlack(n)) whites.push(n);
@@ -133,6 +133,7 @@ function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = f
     if (labels && c) svg += `<text x="${pos[n] + ww / 2}" y="${wh - 12}" text-anchor="middle" font-family="Golos Text" font-size="15" font-weight="600" fill="#161b29">${names[n] || pcName(n)}</text>`;
     if (fingers[n]) svg += `<circle cx="${pos[n] + ww / 2}" cy="${wh - 44}" r="11" fill="#161b29"/><text x="${pos[n] + ww / 2}" y="${wh - 39}" text-anchor="middle" font-family="Golos Text" font-size="14" font-weight="700" fill="#fff">${fingers[n]}</text>`;
     if (n === 60) svg += `<circle cx="${pos[n] + ww / 2}" cy="${wh - (labels && c ? 34 : 14)}" r="3" fill="${c ? '#161b29' : '#a3a9bc'}"/>`;
+    if (ghost[n]) svg += `<circle cx="${pos[n] + ww / 2}" cy="${bh + 22}" r="8" fill="none" stroke="${ghost[n]}" stroke-width="4"/>`;
   }
   for (let n = a; n <= b; n++) {
     if (!isBlack(n)) continue;
@@ -140,6 +141,7 @@ function drawKeyboard(host, { from = 'C3', to = 'C5', highlight = {}, labels = f
     const c = highlight[n];
     svg += `<rect x="${left + ww - bw / 2}" y="1" width="${bw}" height="${bh}" rx="4" fill="${c || '#1b2030'}" stroke="#0e121d" />`;
     if (labels && c) svg += `<text x="${left + ww}" y="${bh - 10}" text-anchor="middle" font-family="Golos Text" font-size="12" font-weight="600" fill="#161b29">${names[n] || pcName(n)}</text>`;
+    if (ghost[n]) svg += `<circle cx="${left + ww}" cy="16" r="7" fill="none" stroke="${ghost[n]}" stroke-width="4"/>`;
     if (fingers[n]) svg += `<circle cx="${left + ww}" cy="${bh - 36}" r="10" fill="#161b29"/><text x="${left + ww}" y="${bh - 31.5}" text-anchor="middle" font-family="Golos Text" font-size="13" font-weight="700" fill="#fff">${fingers[n]}</text>`;
   }
   host.innerHTML = svg + '</svg>';
@@ -944,7 +946,7 @@ function chartPage(id) {
     h('div', { class: 'ch-top' }, h('a', { class: 'back', href: '#/songs' }, '‹'), nowEl, nextEl, whereEl),
     h('div', { class: 'ch-hands' }, lhRow, rhRow),
     kb, fb,
-    h('div', { class: 'row ch-ctl' }, btn('← Назад', () => go(pos - 1, true)), btn('Дальше →', () => go(pos + 1, true), 'btn primary'), listenBtn,
+    h('div', { class: 'row ch-ctl' }, btn('← Назад', () => go(runStart(Math.max(0, runStart(pos) - 1)), true)), btn('Дальше →', () => go(runEnd(pos) + 1, true), 'btn primary'), listenBtn,
       h('label', { class: 'ctl' }, 'Темп ', h('input', { type: 'range', min: 50, max: 140, step: 2, value: bpm, oninput: e => { bpm = +e.target.value; bpmV.textContent = bpm; } }), bpmV)));
 
   /* the song's chords as a warm-up strip: tap one to see and drill it without leaving your place */
@@ -977,7 +979,7 @@ function chartPage(id) {
         btn('−', () => { set.tr = Math.max(-11, set.tr - 1); applySettings(); }), trVal, btn('+', () => { set.tr = Math.min(11, set.tr + 1); applySettings(); }))),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, 'Подсказка при ошибке'), seg('hints', [['off', 'Не показывать'], ['on', 'Показывать']])),
       h('div', { class: 'field-g' }, h('span', { class: 'lbl' }, '«Послушать»: долей на аккорд'), seg('beats', [[2, '2'], [3, '3'], [4, '4']]))),
-    h('p', { class: 'hint' }, '«По звучанию» — нужные ноты в любом порядке, октаве и раскладке, перебором тоже; бас ниже всех. «По форме» — показанное обращение, клавиши вместе.'),
+    h('p', { class: 'hint' }, 'Играешь аккорд сколько нужно — приложение стоит на нём (название зелёное). Сыграл следующий — переходит дальше; кольца на клавишах показывают, куда идти. «По звучанию» — ноты аккорда в любом порядке, октаве и раскладке, перебором тоже. «По форме» — показанное обращение, клавиши вместе.'),
     h('div', { class: 'row' }, h('a', { class: 'btn quiet', href: `#/chart/${id}/edit`, style: 'text-decoration:none' }, 'Изменить текст')));
 
   /* the sheet: lyrics as pasted, chords as buttons over the words */
@@ -1009,9 +1011,9 @@ function chartPage(id) {
   const noteName = (v, n) => v.names[n] + (Math.floor(n / 12) - 1);
   // draw the panel for chord i (the song position, or a chord being drilled)
   function render(i, sound) {
-    const v = voices[i], nx = drill == null ? voices[i + 1] : null;
+    const v = voices[i], nx = drill == null ? voices[runEnd(i) + 1] : null;
     nowEl.textContent = v ? v.sym : (parsed.items[i]?.sym || '') + ' ?';
-    nextEl.textContent = drill != null ? 'разминка' : nx ? 'дальше ' + nx.sym : i + 1 >= parsed.items.length ? 'конец' : '';
+    nextEl.textContent = drill != null ? 'разминка' : nx ? 'дальше ' + nx.sym : runEnd(i) + 1 >= parsed.items.length ? 'конец' : '';
     whereEl.textContent = drill != null ? '' : `${i + 1} из ${parsed.items.length}`;
     lhEl.textContent = v ? v.lh.map(n => noteName(v, n)).join(' + ') : '—';
     rhEl.textContent = v ? v.rh.map(n => noteName(v, n)).join(' ') : 'аккорд не разобрал';
@@ -1021,18 +1023,20 @@ function chartPage(id) {
       if (useL()) v.lh.forEach(n => { hl[n] = COLORS.left; fingers[n] = v.fingers[n]; names[n] = v.names[n]; });
       if (useR()) v.rh.forEach(n => { hl[n] = COLORS.right; fingers[n] = v.fingers[n]; names[n] = v.names[n]; });
     }
-    drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names, fingers });
+    const ghost = {};
+    if (nx) { if (useL()) nx.lh.forEach(n => (ghost[n] = COLORS.left)); if (useR()) nx.rh.forEach(n => (ghost[n] = COLORS.right)); }
+    drawKeyboard(kb, { from: 'C2', to: 'C5', highlight: hl, labels: true, names, fingers, ghost });
     fb.className = 'feedback ch-fb'; fb.textContent = '';
-    fresh = new Set();
+    nowEl.classList.remove('ok');
     if (sound === true && v && !listening) playVoice(v, 1.2);
-    if (sound !== 'listen') setTimeout(checkNow, 0);
   }
   function go(i, sound) {
     if (!parsed.items.length) return;
     drill = null; drawStripIfDrill();
     pos = Math.max(0, Math.min(parsed.items.length - 1, i));
     render(pos, sound);
-    chipEls.forEach((b, k) => b && b.classList.toggle('cur', k === pos));
+    const end = runEnd(pos);
+    chipEls.forEach((b, k) => b && b.classList.toggle('cur', k >= pos && k <= end));
     const el = chipEls[pos];
     if (el && sound !== 'listen') {
       const r = el.getBoundingClientRect(), top = panel.getBoundingClientRect().bottom;
@@ -1042,71 +1046,76 @@ function chartPage(id) {
   }
   function drawStripIfDrill() { if (strip.querySelector('.ch-chip.on')) drawStrip(); }
   function playVoice(v, dur) { synth.silence(); synth.newBus(); synth.ctx.resume(); const t = synth.ctx.currentTime + 0.03; if (useL()) v.lh.forEach(n => synth.play(n, t, dur, 0.3)); if (useR()) v.rh.forEach(n => synth.play(n, t, dur, 0.18)); }
-  // a pass moves on at once (no dead window that swallowed the next chord's first notes, usually the bass)
-  let prevPcs = new Set(), passT = -1e9;
-  function passed(played) {
-    nowEl.classList.add('ok'); setTimeout(() => nowEl.classList.remove('ok'), 260);
-    const v = voices[drill ?? pos];
-    prevPcs = new Set([...(v?.lh || []), ...(v?.rh || [])].map(n => n % 12)); passT = performance.now();
-    if (drill != null) { fresh = new Set(); return; }
-    if (played && set.rh === 'near' && useR() && played.rh[0] !== v.rh[0]) voices = voices.slice(0, pos + 1).concat(voiceAll(parsed.items.slice(pos + 1), set, played));
-    go(pos + 1, false);
+  /* following the player. You stay on a chord as long as you keep playing it (strum it, repeat it, break it up);
+     the moment you play the NEXT chord the app moves there (or two ahead if one was skipped). The current chord turns
+     green when it's recognised. A chord is recognised from what sounds right now: keys held + keys struck in the last
+     0.7 s. «По звучанию»: all its notes, in any order, octave or spread; inversions don't matter.
+     «По форме»: exactly the shown inversion held together, any octave. */
+  const WIN = 700;
+  let strikes = [], lastMove = 0, lastEmpty = 0;
+  const pcsOf = v => new Set([...(useL() ? v.lh : []), ...(useR() ? v.rh : [])].map(n => n % 12));
+  function sounding(now) { strikes = strikes.filter(x => now - x.t < 2000); return [...new Set([...midi.held, ...strikes.filter(x => now - x.t < WIN).map(x => x.n)])]; }
+  function bySound(v, notes) { const have = new Set(notes.map(n => n % 12)); return [...pcsOf(v)].every(pc => have.has(pc)); }
+  function byShape(v) {
+    const lh = useL() ? v.lh : [], rh = useR() ? v.rh : [], got = [...midi.held].sort((a, b) => a - b), nL = lh.length;
+    const pcs = a => a.map(n => n % 12).join(',');
+    return got.length === lh.length + rh.length && pcs(got.slice(0, nL)) === pcs(lh) && pcs(got.slice(nL)) === pcs(rh)
+      && (!nL || !rh.length || got[nL - 1] < got[nL]) && (!rh.length || got[got.length - 1] - got[nL] <= 12) ? got : null;
   }
-  function missed(text) { if (set.hints === 'on') { fb.className = 'feedback bad ch-fb'; fb.textContent = text; } }
-
-  /* checking. «По звучанию»: what counts is everything struck since the chord came up plus every key still held
-     (a common tone kept down from the previous chord counts). Order, octave, spread, arpeggio don't matter; the lowest
-     chord note sounding must be the bass. Checked on key down and key up (letting go of the old bass completes it).
-     «По форме»: the shown voicing held together, any octave (lowest = bass, then the right hand bottom→top). */
-  let timer = null, fresh = new Set();
-  const target = () => voices[drill ?? pos];
+  const matches = (v, notes) => v && (set.check === 'shape' ? !!byShape(v) : bySound(v, notes));
+  function moveTo(k, now) {
+    lastMove = now;
+    if (set.check === 'shape' && set.rh === 'near' && useR()) {
+      const got = byShape(voices[pos + k]);
+      if (got) { const nL = useL() ? voices[pos + k].lh.length : 0, played = { rh: got.slice(nL), lh: nL ? got.slice(0, nL) : voices[pos + k].lh };
+        if (played.rh[0] !== voices[pos + k].rh[0]) voices = voices.slice(0, pos + k + 1).concat(voiceAll(parsed.items.slice(pos + k + 1), set, played)); }
+    }
+    go(pos + k, false); nowEl.classList.add('ok');
+  }
+  // the same chord written several times in a row (Am Am Am) is one step: you just keep playing it
+  const symAt = i => voices[i]?.sym ?? parsed.items[i]?.sym;
+  const runEnd = i => { let j = i; while (j + 1 < parsed.items.length && symAt(j + 1) === symAt(i)) j++; return j; };
+  const runStart = i => { let j = i; while (j > 0 && symAt(j - 1) === symAt(i)) j--; return j; };
+  function judge(note) {
+    const now = performance.now(), notes = sounding(now);
+    if (drill != null) { nowEl.classList.toggle('ok', matches(voices[drill], notes)); return; }
+    const cur = voices[pos], n1 = runEnd(pos) + 1, n2 = n1 < parsed.items.length ? runEnd(n1) + 1 : -1;
+    // What counts towards a move: the latest stretch of playing that no longer adds up to the chord you're on
+    // (leftovers that are also notes of the new chord are fine). If the next chord uses only notes of this one
+    // (C7 → C) it starts after you let go of all keys. A skip ahead needs keys outside the current chord.
+    const curPcs = cur ? pcsOf(cur) : new Set(), recent = strikes.filter(x => now - x.t < WIN && x.t >= lastMove);
+    const held = [...midi.held];
+    const tail = () => { const out = []; for (let i = recent.length - 1; i >= 0; i--) { const tryN = [...held, ...out, recent[i].n]; if (cur && bySound(cur, tryN)) break; out.push(recent[i].n); } return [...new Set([...held, ...out])]; };
+    const afterRelease = () => lastEmpty > lastMove ? [...new Set([...held, ...recent.filter(x => x.t >= lastEmpty).map(x => x.n)])] : [];
+    const afterLeaving = () => { const dep = recent.find(x => !curPcs.has(x.n % 12))?.t ?? Infinity; return [...new Set([...held, ...recent.filter(x => x.t >= dep).map(x => x.n)])]; };
+    const subset = v => [...pcsOf(v)].every(pc => curPcs.has(pc));
+    const stillHere = ns => cur && (set.check === 'shape' ? !!byShape(cur) : bySound(cur, ns));
+    for (const idx of [n1, n2]) {
+      const v = voices[idx]; if (!v || !pcsOf(v).has(note % 12)) continue;
+      const ns = idx === n2 ? (subset(v) ? [] : afterLeaving()) : subset(v) ? afterRelease() : tail();
+      if (!ns.length || stillHere(ns)) continue;
+      if (idx === n2 && (v.sym === cur?.sym || matches(voices[n1], ns))) continue;
+      if (matches(v, ns)) return moveTo(idx - pos, now);
+    }
+    if (matches(cur, notes)) { nowEl.classList.add('ok'); fb.className = 'feedback ch-fb'; fb.textContent = ''; return; }
+    const nx = voices[runEnd(pos) + 1];
+    if (set.hints === 'on' && nx) {
+      const have = new Set(notes.map(n => n % 12)), miss = [...pcsOf(nx)].filter(pc => !have.has(pc));
+      fb.className = 'feedback bad ch-fb';
+      fb.textContent = set.check === 'shape' ? `Дальше ${nx.sym}: ${[...(useL() ? nx.lh : []), ...(useR() ? nx.rh : [])].map(n => noteName(nx, n)).join(' ')} (октава любая)` : `Для ${nx.sym} не хватает: ${miss.map(pcName).join(' ')}`;
+    }
+  }
   const ctrl = {
     onMidi(e) {
-      if (e.on && e.note === 21) { go(pos + 1, false); return; }
-      if (e.on && e.note === 23) { go(pos - 1, false); return; }
-      const v = target(); if (!v) return;
-      if (e.on) {
-        // a trailing key of the chord just passed (within 80 ms) belongs to that chord
-        if (!(performance.now() - passT < 80 && prevPcs.has(e.note % 12))) fresh.add(e.note);
-      }
-      if (set.check === 'sound') { soundCheck(v, e.on); return; }
-      if (!e.on) return;
-      clearTimeout(timer);
-      const need = (useL() ? v.lh.length : 0) + (useR() ? v.rh.length : 0);
-      if (midi.held.size >= need) timer = setTimeout(shapeCheck, 140);
+      if (e.on && e.note === 21) { go(runEnd(pos) + 1, false); return; }
+      if (e.on && e.note === 23) { go(runStart(Math.max(0, runStart(pos) - 1)), false); return; }
+      if (!e.on) { if (!midi.held.size) lastEmpty = performance.now(); return; }
+      strikes.push({ n: e.note, t: performance.now() });
+      // a chord's keys arrive a few ms apart: judge once the cluster has landed
+      clearTimeout(ctrl.t); ctrl.t = setTimeout(() => judge(e.note), 60);
     },
-    stop() { clearTimeout(timer); stopListen(); }
+    stop() { clearTimeout(ctrl.t); stopListen(); }
   };
-  // a new chord may already be complete in the hands (held through the change)
-  function checkNow() {
-    const v = target(); if (!v) return;
-    if (set.check === 'sound') soundCheck(v, false);
-    else { clearTimeout(timer); if (midi.held.size >= (useL() ? v.lh.length : 0) + (useR() ? v.rh.length : 0)) timer = setTimeout(shapeCheck, 140); }
-  }
-  function soundCheck(v, struck) {
-    const need = new Set([...(useL() ? v.lh : []), ...(useR() ? v.rh : [])].map(n => n % 12));
-    const sounding = [...new Set([...fresh, ...midi.held])];
-    const pcs = new Set(sounding.map(n => n % 12));
-    const chordNotes = sounding.filter(n => need.has(n % 12)).sort((a, b) => a - b);
-    const bassOk = !useL() || (chordNotes.length && chordNotes[0] % 12 === v.lh[0] % 12);
-    const all = [...need].every(pc => pcs.has(pc)), struckOne = [...fresh].some(n => need.has(n % 12));
-    if (all && bassOk && struckOne) return passed(null);
-    if (!struck) return;
-    const stray = [...new Set([...fresh].map(n => n % 12))].filter(pc => !need.has(pc));
-    if (stray.length) missed(`Лишние ноты: ${stray.map(pcName).join(' ')}. Нужно: ${[...need].map(pcName).join(' ')}${useL() ? `, бас ${pcName(v.lh[0])} ниже всех` : ''}`);
-    else if (all && !bassOk) missed(`Все ноты есть, но ниже всех должен быть бас ${pcName(v.lh[0])}`);
-  }
-  function shapeCheck() {
-    const v = target(); if (!v) return;
-    const lh = useL() ? v.lh : [], rh = useR() ? v.rh : [];
-    const got = [...midi.held].sort((a, b) => a - b), nL = lh.length;
-    const pcs = a => a.map(n => n % 12).join(',');
-    const ok = got.length === lh.length + rh.length && pcs(got.slice(0, nL)) === pcs(lh) && pcs(got.slice(nL)) === pcs(rh)
-      && (!nL || !rh.length || got[nL - 1] < got[nL]) && (!rh.length || got[got.length - 1] - got[nL] <= 12);
-    if (ok && [...fresh].some(n => got.includes(n))) return passed({ rh: got.slice(nL), lh: got.slice(0, nL).length ? got.slice(0, nL) : v.lh });
-    const nm = n => v.names[n] || pcName(n);
-    missed(`Сыграл ${got.map(midiName).join(' ')} — нужно${lh.length ? ': бас ' + lh.map(nm).join(' + ') : ''}${rh.length ? (lh.length ? ', правая ' : ': правая ') + rh.map(nm).join(' ') + ' снизу вверх' : ''} (октава любая)`);
-  }
 
   /* listen: each chord for N beats at the chosen tempo, from the current one */
   let listening = false, lt = null;
@@ -1132,7 +1141,7 @@ function chartPage(id) {
   activate(ctrl);
   applySettings(); go(pos, false);
   keepAwake();
-  const cleanup = () => { stopListen(); clearTimeout(timer); window.removeEventListener('resize', pin); c.bpm = bpm; charts.put({ ...charts.get(id), set, pos, bpm }); window.removeEventListener('hashchange', cleanup); };
+  const cleanup = () => { stopListen(); clearTimeout(ctrl.t); window.removeEventListener('resize', pin); c.bpm = bpm; charts.put({ ...charts.get(id), set, pos, bpm }); window.removeEventListener('hashchange', cleanup); };
   window.addEventListener('hashchange', cleanup);
   if (window.__klavishi) Object.assign(window.__klavishi, { chart: { parsed, get voices() { return voices; }, get pos() { return pos; }, get drill() { return drill; }, set } });
 }
