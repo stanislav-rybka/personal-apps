@@ -1,7 +1,7 @@
-# Клавиши — piano app
+# Klavishi — piano app
 
 A piano trainer for an Android tablet on the music stand, played on a Roland FP-30X over Bluetooth MIDI.
-Live: `https://stanislav-rybka.github.io/personal-apps/piano/` (installable: Chrome → Install app).
+Live: `https://stanislav-rybka.github.io/personal-apps/piano/` (installable: Chrome → Install app). The UI is in Russian.
 
 No build step: `index.html` + `css/app.css` + `js/app.js` (one file on purpose), libraries vendored in `vendor/`.
 Bump the `?v=` query on the CSS/JS links in `index.html` with every change so the tablet doesn't serve a stale copy.
@@ -10,10 +10,10 @@ Bump the `?v=` query on the CSS/JS links in `index.html` with every change so th
 
 | Section | What it does | Data |
 |---|---|---|
-| Теория | Lessons made of blocks (theory text, staff, keyboard, image, note reading, chord, guided practice); MIDI-checked blocks save a result | Lesson JSON in Drive, via the bridge |
-| Упражнения | Library by category + «now in focus»; exercise page with texts, tempo ladder and metronome; an optional note pattern is played in the song player; the player rates «clean at N BPM» himself, MIDI checks only the notes | Exercise JSON in Drive, via the bridge |
-| Песни → По нотам | MIDI / MusicXML / .mxl player: falling notes, staff strip or engraved score (OSMD), wait-for-me mode, hands, bar loop, listen mode, simplified arrangement | Song files in Drive, via the bridge |
-| Песни → По аккордам | A chord sheet (chords over lyrics) pasted from any site. «Разучить»: the song's chords one by one with live held-key check, inversions and its chord changes ranked by difficulty. «Играть»: one keyboard shows the chord now and the next one, and the app follows the song as you play | **Only in this browser** (localStorage); backup = an exported JSON file |
+| Theory | Lessons made of blocks (theory text, staff, keyboard, image, note reading, chord, guided practice); MIDI-checked blocks save a result | Lesson JSON in Drive, via the bridge |
+| Exercises | Library by category + "now in focus"; exercise page with texts, tempo ladder and metronome; an optional note pattern is played in the song player; the player rates "clean at N BPM" himself, MIDI checks only the notes | Exercise JSON in Drive, via the bridge |
+| Songs → by notes | MIDI / MusicXML / .mxl player: falling notes, staff strip or engraved score (OSMD), wait-for-me mode, hands, bar loop, listen mode, simplified arrangement | Song files in Drive, via the bridge |
+| Songs → by chords | A chord sheet (chords over lyrics) pasted from any site. *Study*: the song's chords one by one with live held-key check, inversions and its chord changes ranked by difficulty. *Play*: one keyboard shows the chord now and the next one, and the app follows the song as you play | **Only in this browser** (localStorage); backup = an exported JSON file |
 
 Content formats (lessons, exercises) are specified outside this repo; the engine contains no content.
 
@@ -35,7 +35,7 @@ Content formats (lessons, exercises) are specified outside this repo; the engine
   `Label: Am Dm` lines are split. Chords keep their column so they render over the right word.
 - **Voicing** (`voiceChord`): left hand = bass in octave 2 (+ fifth or octave); right hand = three close notes above it.
   Four-note chords drop the fifth, then the root. Candidates are every rotation of the chord tones (= inversions);
-  «root position» picks the one with the root at the bottom, «nearest form» the one closest to the previous chord,
+  "root position" picks the one with the root at the bottom, "nearest form" the one closest to the previous chord,
   `set.inv` forces one. Fingers by a general rule (1-3-5, or 1-2-5 when the top interval is a fourth or wider).
 - **Following the song** (`chartPage` → `judge`): the app stays on a chord while it's played (repeats, broken,
   any octave) and moves only when the *next* chord of the song is played. A move counts only the latest stretch of
